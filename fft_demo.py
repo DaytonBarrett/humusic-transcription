@@ -31,9 +31,3 @@ plt.plot(positive_freqs, magnitude)
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Magnitude")
 plt.title("FFT Frequency Spectrum of 440 Hz Signal")
-
-# Save the image for README
-plt.savefig("images/fft_example.png")
-
-# Show the plot
-plt.show()
