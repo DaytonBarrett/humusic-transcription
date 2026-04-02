@@ -48,3 +48,8 @@ This project is also intended to strengthen my understanding of:
 - MIDI / MusicXML export
 - Real-time transcription
 - Performance optimization (possibly using C++)
+
+## Example of an Image of the FFT Graph that is used for pitch analysis
+*Note, this image does NOT have any audio input; however, this is an example of the graph that the FFT transforms pitch into.*
+<img width="640" height="480" alt="fft_example" src="https://github.com/user-attachments/assets/4107b57b-b3ba-4b89-b6a8-b08257026e99" />
+
