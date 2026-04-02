@@ -1,7 +1,20 @@
-# Demonstration of Fast Fourier Transform applied to a simple sinusoidal signal.
-# This script generates a 440 Hz tone and shows how FFT reveals its frequency.
 import numpy as np
 import matplotlib.pyplot as plt
+import pyaudio
+import wave
+import time
+import sys
+
+# Audio/Mic input
+import sounddevice as sd
+from scipy.io.wavfile import write
+
+fs = 44100  # Sample rate
+seconds = 3  # Duration of recording
+
+myrecording = sd.rec(int(seconds * fs), samplerate=fs, channels=1)
+sd.wait()  # Wait until recording is finished
+write('/Users/daytonbarrett/Desktop/output.wav', fs, myrecording) # Save as WAV file
 
 # Sampling rate (samples per second)
 sample_rate = 44100
@@ -16,7 +29,7 @@ t = np.linspace(0, duration, sample_rate)
 frequency = 440
 signal = np.sin(2 * np.pi * frequency * t)
 
-# Perform Fast Fourier Transform
+# Fast Fourier Transform
 fft_result = np.fft.fft(signal)
 
 # Get frequency bins
@@ -31,3 +44,9 @@ plt.plot(positive_freqs, magnitude)
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Magnitude")
 plt.title("FFT Frequency Spectrum of 440 Hz Signal")
+
+# Save the image for analysis
+plt.savefig("/Users/daytonbarrett/Desktop/fft_example.png")
+
+# Show the plot
+plt.show()
