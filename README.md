@@ -50,7 +50,8 @@ This project is also intended to strengthen my understanding of:
 - Performance optimization (possibly using C++)
 
 ## Example of an Image of the FFT Graph that is used for pitch analysis
-*Note, this image does NOT have any audio input; however, this is an example of the graph that the FFT transforms raw wav. file into.*
+*Note, this is NOT a graph used universally for every FFT; however, this is an example of what the output from the FFT will look like, which will then be analyzed by the program to transcribe the function into sheet music.**
 
-<img width="640" height="480" alt="fft_example" src="https://github.com/user-attachments/assets/4107b57b-b3ba-4b89-b6a8-b08257026e99" />
+<img width="1200" height="500" alt="fft_example" src="https://github.com/user-attachments/assets/e07a4831-0b48-4f9e-8ad4-e1080d90231e" />
+
 
