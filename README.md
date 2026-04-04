@@ -1,4 +1,6 @@
 # humusic-transcription
+<img width="1024" height="1024" alt="humusic-iOS-Default-1024x1024@1x 1" src="https://github.com/user-attachments/assets/e02fb81a-2fd6-4b48-be79-8bd95dfe31ca" />
+
 
 Humusic Transcription is a project that converts recorded audio into sheet music written in Western musical notation.
 
