@@ -1,1 +1,287 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+from scipy.signal import medfilt
+import sounddevice as sd
+from scipy.io.wavfile import write
+import tkinter as tk
+import threading
+import os
 
+try:
+    import librosa
+    LIBROSA_OK = True
+except ImportError:
+    LIBROSA_OK = False
+    print("librosa not found. Run: pip install librosa")
+
+try:
+    from music21 import stream as m21stream, note as m21note, tempo as m21tempo, meter
+    MUSIC21_OK = True
+except ImportError:
+    MUSIC21_OK = False
+    print("music21 not found. Run: pip install music21")
+
+
+fs = 44100
+recording = False
+audio_data = []
+stream = None
+
+NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+
+def hz_to_midi(freq):
+    if freq is None or np.isnan(freq) or freq <= 0:
+        return None
+    return 69 + 12 * np.log2(freq / 440.0)
+
+def hz_to_note(freq):
+    # MIDI = 69 + 12 * log2(freq / 440), then map to note name + octave
+    midi = hz_to_midi(freq)
+    if midi is None:
+        return None
+    midi_rounded = int(round(midi))
+    return NOTE_NAMES[midi_rounded % 12] + str(midi_rounded // 12 - 1)
+
+def quantize_duration(duration_sec, bpm):
+    # Snap raw duration to nearest standard note value given the beat length
+    beat = 60.0 / bpm
+    note_values = {
+        'whole':     beat * 4,
+        'half':      beat * 2,
+        'quarter':   beat,
+        'eighth':    beat / 2,
+        'sixteenth': beat / 4,
+    }
+    return min(note_values, key=lambda k: abs(note_values[k] - duration_sec))
+
+def segment_notes(f0, hop_length, sr, bpm):
+    # Walk f0 frame by frame; start a new note on voiced/unvoiced transitions
+    # or when pitch jumps more than 0.5 semitones
+    frame_dur = hop_length / sr
+    segments = []
+    seg_start = 0
+    prev_midi = None
+
+    for i, freq in enumerate(f0):
+        curr_midi = hz_to_midi(freq) if (freq and not np.isnan(freq)) else None
+
+        boundary = False
+        if i == 0:
+            boundary = True
+        elif (curr_midi is None) != (prev_midi is None):
+            boundary = True
+        elif curr_midi is not None and prev_midi is not None:
+            if abs(curr_midi - prev_midi) > 0.5:
+                boundary = True
+
+        if boundary and i > 0:
+            seg_f0 = f0[seg_start:i]
+            voiced = seg_f0[~np.isnan(seg_f0)] if len(seg_f0) else np.array([])
+            duration_sec = (i - seg_start) * frame_dur
+            note_name = hz_to_note(np.nanmedian(voiced)) if len(voiced) > 0 else None
+            dur_type = quantize_duration(duration_sec, bpm)
+            segments.append((note_name, dur_type, duration_sec))
+            seg_start = i
+
+        prev_midi = curr_midi
+
+    # Final segment
+    seg_f0 = f0[seg_start:]
+    voiced = seg_f0[~np.isnan(seg_f0)] if len(seg_f0) else np.array([])
+    duration_sec = (len(f0) - seg_start) * frame_dur
+    note_name = hz_to_note(np.nanmedian(voiced)) if len(voiced) > 0 else None
+    segments.append((note_name, quantize_duration(duration_sec, bpm), duration_sec))
+
+    return segments
+
+def build_score(segments, bpm):
+    if not MUSIC21_OK:
+        print("music21 not available — skipping score export.")
+        return
+    s = m21stream.Score()
+    part = m21stream.Part()
+    part.append(meter.TimeSignature('4/4'))
+    part.append(m21tempo.MetronomeMark(number=bpm))
+    for note_name, dur_type, _ in segments:
+        n = m21note.Note(note_name) if note_name else m21note.Rest()
+        n.duration.type = dur_type
+        part.append(n)
+    s.append(part)
+    out_path = os.path.expanduser('~/Desktop/transcription.xml')
+    s.write('musicxml', out_path)
+    print(f"Score saved -> {out_path}")
+    try:
+        s.show()
+    except Exception as e:
+        print(f"Could not open notation viewer: {e}")
+
+
+def callback(indata, frames, time, status):
+    if recording:
+        audio_data.append(indata.copy())
+
+def start_recording():
+    global recording, audio_data, stream
+    audio_data = []
+    stream = sd.InputStream(samplerate=fs, channels=1, callback=callback, device=3)
+    stream.start()
+    recording = True
+    status_label.config(text="Recording...", fg="red")
+    start_btn.config(state=tk.DISABLED)
+    stop_btn.config(state=tk.NORMAL)
+
+def stop_recording():
+    global recording, stream
+    if stream is None:
+        return
+    recording = False
+    stream.stop()
+    stream.close()
+    stream = None
+    status_label.config(text="Processing...", fg="orange")
+    stop_btn.config(state=tk.DISABLED)
+    threading.Thread(target=analyze_audio).start()
+
+def analyze_audio():
+    if not audio_data:
+        status_label.config(text="No audio recorded!", fg="red")
+        return
+
+    # Combine all recorded chunks
+    sig = np.concatenate(audio_data, axis=0).flatten().astype(np.float32)
+
+    # Remove DC offset
+    sig = sig - np.mean(sig)
+
+    print(f"Signal length: {len(sig)}")
+    print(f"Signal max: {np.max(sig)}")
+    print(f"Signal min: {np.min(sig)}")
+    print(f"Signal mean: {np.mean(sig)}")
+
+    # Save as WAV
+    write(os.path.expanduser('~/Desktop/output.wav'), fs, sig)
+
+    # FFT
+    fft_result = np.fft.fft(sig)
+    freqs = np.fft.fftfreq(len(fft_result), 1 / fs)
+
+    # Only positive frequencies
+    positive_freqs = freqs[:len(freqs) // 2]
+    magnitude = np.abs(fft_result[:len(fft_result) // 2])
+
+    # Ignore everything below 50 Hz (filters out DC offset and rumble)
+    min_freq_index = np.searchsorted(positive_freqs, 50)
+    magnitude[:min_freq_index] = 0
+
+    # Dominant frequency
+    dominant_freq = positive_freqs[np.argmax(magnitude)]
+
+    # pYIN pitch tracking — returns f0 per frame (~11.6ms each), NaN where unvoiced
+    if not LIBROSA_OK:
+        status_label.config(text=f"Dominant frequency: {dominant_freq:.2f} Hz (install librosa for transcription)", fg="green")
+        start_btn.config(state=tk.NORMAL)
+        window.after(0, lambda: show_plot(positive_freqs, magnitude, dominant_freq, None, None))
+        return
+
+    hop_length = 512
+    f0, voiced_flag, voiced_prob = librosa.pyin(
+        sig,
+        fmin=librosa.note_to_hz('C2'),
+        fmax=librosa.note_to_hz('C7'),
+        sr=fs,
+        hop_length=hop_length,
+    )
+
+    # Median filter to smooth out vibrato and glitches
+    f0_smooth = np.where(np.isnan(f0), np.nan,
+                         medfilt(np.where(np.isnan(f0), 0, f0), kernel_size=5))
+
+    # Get BPM from entry field
+    try:
+        bpm = float(entry.get())
+        if bpm <= 0:
+            raise ValueError
+    except ValueError:
+        bpm = 120.0
+
+    # Segment f0 into discrete notes and quantize durations
+    segments = segment_notes(f0_smooth, hop_length, fs, bpm)
+    note_list = [(n, d) for n, d, _ in segments if n]
+
+    notes_text = "  ".join(f"{n}({d[0].upper()})" for n, d in note_list[:20])
+    status_label.config(text=f"Done!  Dominant: {dominant_freq:.2f} Hz  |  {len(note_list)} notes", fg="green")
+    notes_label.config(text=notes_text if notes_text else "No pitched notes detected")
+    start_btn.config(state=tk.NORMAL)
+
+    # Export MusicXML score
+    build_score(segments, bpm)
+
+    times = librosa.times_like(f0, sr=fs, hop_length=hop_length)
+    window.after(0, lambda: show_plot(positive_freqs, magnitude, dominant_freq, times, f0_smooth))
+
+def show_plot(positive_freqs, magnitude, dominant_freq, times, f0):
+    has_pitch = times is not None and f0 is not None
+
+    if has_pitch:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    else:
+        fig, ax1 = plt.subplots(1, 1, figsize=(12, 5))
+
+    # FFT spectrum
+    ax1.plot(positive_freqs, magnitude)
+    ax1.axvline(dominant_freq, color='red', linestyle='--', label=f'Dominant: {dominant_freq:.2f} Hz')
+    ax1.set_xlabel("Frequency (Hz)")
+    ax1.set_ylabel("Magnitude")
+    ax1.set_title(f"FFT Frequency Spectrum (Dominant: {dominant_freq:.2f} Hz)")
+    ax1.set_xlim(0, 5000)
+    ax1.legend()
+
+    # pYIN pitch track with note labels
+    if has_pitch:
+        voiced_mask = ~np.isnan(f0)
+        ax2.scatter(times[voiced_mask], f0[voiced_mask], s=2, color='green', label='Pitch (voiced)')
+        ax2.set_xlabel("Time (s)")
+        ax2.set_ylabel("Frequency (Hz)")
+        ax2.set_title("pYIN Pitch Track")
+        ax2.set_ylim(50, 1200)
+        ax2.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.expanduser('~/Desktop/fft_example.png'))
+    plt.show()
+
+
+# --- Build GUI ---
+window = tk.Tk()
+window.title("Hummusic")
+window.geometry("600x400")
+window.resizable(True, True)
+
+entry_label = tk.Label(window, text="Tempo:", font=("fixedys", 12, "bold"))
+entry_label.pack(pady=5)
+
+entry = tk.Entry(window, font=("fixedys", 12, "bold"), width=10)
+entry.pack(pady=5)
+entry.config(bg="lightgray")
+entry.insert(0, "120")
+
+title_label = tk.Label(window, text="Hummusic", font=("fixedys", 20, "bold"))
+title_label.pack(pady=10)
+
+status_label = tk.Label(window, text="Press Start to record", font=("fixedys", 12, "bold"), fg="blue")
+status_label.pack(pady=5)
+
+notes_label = tk.Label(window, text="", font=("fixedys", 9), fg="black", wraplength=560)
+notes_label.pack(pady=2)
+
+start_btn = tk.Button(window, text="Start", font=("fixedys", 14, "bold"), bg="green", fg="blue",
+                      width=10, height=10, command=start_recording)
+start_btn.pack(pady=5)
+
+stop_btn = tk.Button(window, text="Stop", font=("fixedys", 14, "bold"), bg="red", fg="blue",
+                     width=10, height=10, command=stop_recording, state=tk.DISABLED)
+stop_btn.pack(pady=5)
+
+window.mainloop()
