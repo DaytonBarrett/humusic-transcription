@@ -1,6 +1,6 @@
-I am excited to attempt to port my python program of humusic into C++. I have been learning C++ for a while now, and I think it will be a great opportunity to apply my knowledge and improve my skills.
-The first step in the porting process will be to analyze the existing python code and identify the key components and functionalities that need to be implemented in C++. I will also need to consider any libraries or dependencies that are currently being used in the python version and find suitable alternatives in C++.
+I am excited to attempt to port my Python program of humusic into C++. I have been learning C++ for a while now, and I think it will be a great opportunity to apply my knowledge and improve my skills.
+The first step in the porting process will be to analyze the existing Python code and identify the key components and functionalities that need to be implemented in C++. I will also need to consider any libraries or dependencies that are currently being used in the Python version and find suitable alternatives in C++.
 
-The strongest alternative to numpy I have found for C++ is the armadillo library, which provides efficent linear algebra operations and an apporachable yet powerful syntax I am thrilled to learn to use.
+The strongest alternative to numpy I have found for C++ is the Armadillo library, which provides efficient linear algebra operations and an approachable yet powerful syntax I am thrilled to learn to use.
 
 I will continue updating this document as I make progress on the porting process, and I am looking forward to sharing my experiences and insights along the way. I am confident that this project will not only enhance my C++ skills but also allow me to create a more efficient and robust version of humusic.
