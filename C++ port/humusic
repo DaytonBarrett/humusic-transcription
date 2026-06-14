@@ -1,10 +1,11 @@
 #include <iostream>
+#include <vector>
 #include <iostream>
 #include <armadillo>
 
-int main() {
+int matrix_operations() {
     // Create a 3x3 matrix
-    arma::mat A = {{1, 1, 1},
+    arma::mat A = {{1,  1, 1},
                    {1, 1, 1},
                    {1, 1, 1}};
 
@@ -18,3 +19,7 @@ int main() {
 
     return 0;
 }
+
+int x = matrix_operations();
+int * pX = &x;
+ 
