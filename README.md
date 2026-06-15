@@ -1,61 +1,112 @@
-# humusic-transcription
-<img width="1024" height="1024" alt="humusic-iOS-Default-1024x1024@1x 1" src="https://github.com/user-attachments/assets/e02fb81a-2fd6-4b48-be79-8bd95dfe31ca" />
+# humusic — Website
 
+**Audio to Sheet Music** · by Dayton Barrett
 
-Humusic Transcription is a project that converts recorded audio into sheet music written in Western musical notation. 
+---
 
-*NOTE: APP IS CURRENTLY BEING DEVELOPED AND DOES NOT YET FUNCTION AS INTENDED*
+## 🚀 Getting Started with GitHub Pages
 
-The goal of this project is to analyze an audio signal, detect its frequencies, and translate those frequencies into musical notes.
+### 1. Create a GitHub repository
 
-This project explores how digital signal processing techniques, particularly the Fast Fourier Transform (FFT), can be applied to real-world audio problems.
+1. Go to [github.com](https://github.com) and create a **new repository**.
+2. Name it `humusic` (or anything you'd like — the URL will be `yourusername.github.io/reponame`).
+3. Set visibility to **Public** (required for free GitHub Pages).
 
-## Motivation
+### 2. Upload the files
 
-Transcribing musical ideas into notation can be difficult, especially for musicians without strong transcription skills. Many people can sing or play musical ideas, but struggle to write them down.
+Upload the following files into the **root** of your repository:
 
-This project aims to reduce that barrier by allowing users to record audio and automatically detect the notes being sung or played.
+```
+/
+├── index.html
+├── style.css
+├── script.js
+└── README.md
+```
 
-## How It Works
+You can do this by:
+- Dragging files into the GitHub web interface, or
+- Using Git from your terminal:
 
-Audio signals exist in the time domain, representing amplitude over time.
+```bash
+git clone https://github.com/YOUR_USERNAME/humusic.git
+cd humusic
+# Copy website files here, then:
+git add .
+git commit -m "Initial commit"
+git push origin main
+```
 
-To detect musical notes, the signal must be converted into the frequency domain. This project uses the Fast Fourier Transform (FFT) to transform the signal and identify dominant frequencies.
+### 3. Enable GitHub Pages
 
-The process:
+1. Go to your repository on GitHub.
+2. Click **Settings** → **Pages** (in the left sidebar).
+3. Under **Source**, select `Deploy from a branch`.
+4. Choose branch: **main** and folder: **/ (root)**.
+5. Click **Save**.
 
-1. Record or load an audio signal  
-2. Apply FFT to convert the waveform into a frequency spectrum  
-3. Identify spectral peaks (dominant frequencies)  
-4. Map detected frequencies to musical notes  
-5. Output a sequence of notes for transcription
+Your site will be live at:
+```
+https://YOUR_USERNAME.github.io/humusic/
+```
+(May take 1–3 minutes to deploy.)
 
-## Technologies
+---
 
-- Python  
-- NumPy  
-- SciPy  
-- Matplotlib  
+## 📧 Contact Form Setup
 
-## Goals
+The contact form currently opens the visitor's email client with a pre-filled message to `daybarrett09@gmail.com`.
 
-This project is also intended to strengthen my understanding of:
+**Optional — Use Formspree for in-browser form submission:**
 
-- Fast Fourier Transforms
-- Digital signal processing
-- Applying calculus and mathematics to real problems
-- Building a complete audio analysis pipeline
+1. Sign up at [formspree.io](https://formspree.io)
+2. Create a new form and copy your form endpoint URL
+3. In `script.js`, find the `ContactForm` class and replace the mailto approach with:
 
-## Future Development
+```javascript
+fetch('https://formspree.io/f/YOUR_FORM_ID', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name, email, reason, message })
+})
+.then(() => {
+  this.form.style.display = 'none';
+  this.success.classList.add('show');
+});
+```
 
-- Improved pitch detection
-- MIDI / MusicXML export
-- Real-time transcription
-- Performance optimization (possibly using C++)
+---
 
-## Example of an Image of the FFT Graph that is used for pitch analysis
-*Note, this is NOT a graph used universally for every FFT; however, this is an example of what the output from the FFT will look like, which will then be analyzed by the program to transcribe the function into sheet music.**
+## 📁 File Structure
 
-<img width="1200" height="500" alt="fft_example" src="https://github.com/user-attachments/assets/e07a4831-0b48-4f9e-8ad4-e1080d90231e" />
+```
+/
+├── index.html     — Main HTML (all sections)
+├── style.css      — All styles and animations
+├── script.js      — Canvas, scroll reveal, particles, counter
+└── README.md      — This file
+```
 
+---
 
+## ✨ Features
+
+- **Animated hero canvas** — Multi-layer sine waveform
+- **Floating music note particles** — ♩ ♪ ♫ ♬ drift upward
+- **Scroll reveal animations** — Elements fade in on scroll
+- **Animated counters** — Stats count up when visible
+- **Cycling word animation** — Hero headline rotates words
+- **Cursor glow effect** — Subtle radial gradient follows mouse
+- **Sticky glass nav** — Frosted glass on scroll
+- **Step canvas** — Live waveform in "How It Works"
+- **Staff animation** — Notes appear on music staff
+- **Mobile responsive** — Fully responsive down to 320px
+- **Marquee band** — Scrolling music workflow ticker
+- **Keyboard accessible** — Focus styles, ARIA labels
+
+---
+
+## 🖋 Contact
+
+**Dayton Barrett** — Founder & Lead Developer, humusic  
+📧 [daybarrett09@gmail.com](mailto:daybarrett09@gmail.com)
