@@ -1,4 +1,5 @@
-humusic-iOS-Default-1024x1024@1x 1
+<img width="1024" height="1024" alt="humusic-iOS-Default-1024x1024@1x" src="https://github.com/user-attachments/assets/431ae5e3-32b6-4471-8720-2834e3304853" />
+
 Humusic Transcription is a project that converts recorded audio into sheet music written in Western musical notation.
 
 NOTE: APP IS CURRENTLY BEING DEVELOPED AND DOES NOT YET FUNCTION AS INTENDED
@@ -21,4 +22,5 @@ The process:
 3. Identify spectral peaks (dominant frequencies)  
 4. Map detected frequencies to musical notes
 
-fft_example
+<img width="640" height="480" alt="fft_example" src="https://github.com/user-attachments/assets/775e988f-c746-42b9-b431-583c3a5c95ce" />
+
