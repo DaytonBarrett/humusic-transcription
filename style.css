@@ -1282,3 +1282,45 @@ footer {
   .btn-primary, .btn-ghost { width: 100%; justify-content: center; }
   .stat-item { flex: 1 1 100%; }
 }
+
+.privacy-policy {
+  margin-top: 2rem;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 1rem;
+}
+
+.privacy-policy summary {
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: rgba(255,255,255,0.7);
+  transition: color 0.25s ease;
+}
+
+.privacy-policy summary:hover {
+  color: #fff;
+}
+
+.privacy-content {
+  margin-top: 1rem;
+  max-width: 800px;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  color: rgba(255,255,255,0.65);
+}
+
+.privacy-content p {
+  margin-bottom: 0.9rem;
+}
+
+.footer-links-secondary a {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.65);
+  text-decoration: none;
+}
+
+.footer-links-secondary a:hover {
+  color: #fff;
+}
