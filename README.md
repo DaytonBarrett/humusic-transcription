@@ -17,10 +17,11 @@ Audio signals exist in the time domain, representing amplitude over time.
 To detect musical notes, the signal must be converted into the frequency domain. This project uses the Fast Fourier Transform (FFT) to transform the signal and identify dominant frequencies.
 
 The process:
-1. Record or load an audio signal  
-2. Apply FFT to convert the waveform into a frequency spectrum  
-3. Identify spectral peaks (dominant frequencies)  
-4. Map detected frequencies to musical notes
+1. Record or load an audio signal
+2. Split the recording into samples dependent on the tempo and size of the recording
+4. Apply FFT to convert the waveform into a frequency spectrum  
+5. Identify spectral peaks (dominant frequencies)  
+6. Map detected frequencies to musical notes
 
-<img width="640" height="480" alt="fft_example" src="https://github.com/user-attachments/assets/775e988f-c746-42b9-b431-583c3a5c95ce" />
+<img width="3039" height="1350" alt="humusic" src="https://github.com/user-attachments/assets/ac66c266-5edd-470b-8741-467758412868" />
 
