@@ -4,14 +4,26 @@
 #include <numeric>
 #include <cmath>
 
+int main() {
+    std::cout << "Hello, World!";
+    return 0;
+}
+
 int tempo = 120; // default tempo in BPM, can be changed by user input
 int *pTP = &tempo; // pointer to tempo variable 
 
 int sample_division () // calculate sample division
 {
-    int sample_division = pTP[0] * 16; // calculate sample division based on tempo
+    int tempo = pTP[0] * 16; // calculate sample division based on tempo
 
-    std::cout << "Sample division: " << sample_division << std::endl; // print sample division for debugging
+    std::cout << "Sample division: " << tempo; // print sample division for debugging
+
+    return tempo;
+}
+
+int check(){
+
+    std::cout << sample_division();
 
     return 0;
 }
