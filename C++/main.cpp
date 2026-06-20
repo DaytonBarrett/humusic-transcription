@@ -1,29 +1,27 @@
 #include <iostream>
+#include <string>
 #include <vector>
 #include <iostream>
 #include <numeric>
 #include <cmath>
 
 int main() {
-    std::cout << "Hello, World!";
-    return 0;
-}
+    
+    const int   sampleRate = 44100;
+    const int totalSamples = 30 * sampleRate; //30 seconds total
+    std::vector<float> audioBuffer(totalSamples);
+    int tempo;
 
-int tempo = 120; // default tempo in BPM, can be changed by user input
-int *pTP = &tempo; // pointer to tempo variable 
+    std::cout << "Enter tempo: ";
+    std::cin >> tempo;
+    std::cout << "Sample division " << tempo * 16 << std::endl;
 
-int sample_division () // calculate sample division
-{
-    int tempo = pTP[0] * 16; // calculate sample division based on tempo
-
-    std::cout << "Sample division: " << tempo; // print sample division for debugging
-
-    return tempo;
-}
-
-int check(){
-
-    std::cout << sample_division();
+    const float pi = 3.141592653f;
+    const float frequency = 440.0f;
+    for (int i = 0; i < totalSamples; i++) {
+        audioBuffer[i] = std::sin(2.0f * pi * frequency * i / sampleRate);
+    }
 
     return 0;
 }
+
