@@ -364,7 +364,7 @@ class WordCycler {
   constructor() {
     this.el    = $('#waveWord');
     if (!this.el) return;
-    this.words = ['sound', 'melody', 'humming', 'audio', 'music'];
+    this.words = ['sound', 'hums', 'audio', 'music', 'idea'];
     this.idx   = 0;
     this.el.style.transition = 'opacity 280ms ease, transform 280ms ease';
     this.el.style.display    = 'inline-block';
