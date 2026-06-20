@@ -1,8 +1,6 @@
 #include <iostream>
 #include <vector>
 #include <iostream>
-#include <armadillo>
-#include <portaudio.h>
 #include <numeric>
 #include <cmath>
 
@@ -15,5 +13,5 @@ int sample_division () // calculate sample division
 
     std::cout << "Sample division: " << sample_division << std::endl; // print sample division for debugging
 
-    return sample_division;
+    return 0;
 }
