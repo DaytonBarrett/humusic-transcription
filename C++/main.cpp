@@ -5,6 +5,8 @@
 #include <numeric>
 #include <cmath>
 #include <armadillo>
+#define pi 3.14159265358979323846
+
 
 int main() {
     
@@ -19,7 +21,6 @@ int main() {
     std::cin >> tempo;
     std::cout << "Sample division " << tempo * 16 << std::endl;
 
-    const float pi = 3.141592653f;
     const float frequency = 440.0f;
     for (int i = 0; i < totalSamples; i++) {
         audioBuffer[i] = std::sin(2.0f * pi * frequency * i / sampleRate);
