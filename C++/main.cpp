@@ -28,7 +28,7 @@ int main() {
 
     //split audio into segments based on tempo
 
-    int numSplits = 3; 
+    int numSplits = tempo * 16; 
     int numSegments = numSplits + 1;
     int segmentSize = totalSamples / numSegments;
 
@@ -70,6 +70,34 @@ int main() {
 
     }
 
+/* Note identification
+fix this later, but basically the point of this section is to define a range that can be used to identify what note the frequency played is in.
+may need to be changed later in order to improve the accuracy of the note identification as well as to define the note the frequency is as a variable that can be used throughout transcription, not just once?
+ for (int i = 0; i < numSegments; i++) {
+    if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
+        std::cout << "Note is B7"
+        int note = B7;
+    } 
+ }
+    ??this could work maybe??
+*/
+
+
+
+if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
+    std::cout << "Note is B7";
+}
+
+if (audioPtr[0] > 4186.01 && audioPtr[0] < 4434.92) {
+    std::cout << "Note is C8";
+}
+
+if (audioPtr[0] > 4186.01 && audioPtr[0] < 4434.92) {
+    std::cout << "Note is C8";
+}
+
+if (audioPtr[0] > 4434.92 && audioPtr[0] < 4698.64) {
+    std::cout << "Note is C#";
     return 0;
 }
 
