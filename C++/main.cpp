@@ -11,9 +11,10 @@
 int main() {
     
     //generate audio -> will be changed later to read from recording
+    //exsampleRate rate is example sample rate
 
-    const int   sampleRate = 44100;
-    const int totalSamples = 30 * sampleRate; //30 seconds total
+    const int   exsampleRate = 44100;
+    const int totalSamples = 30 * exsampleRate; //30 seconds total
     std::vector<float> audioBuffer(totalSamples);
     int tempo;
 
@@ -23,7 +24,8 @@ int main() {
 
     const float frequency = 440.0f;
     for (int i = 0; i < totalSamples; i++) {
-        audioBuffer[i] = std::sin(2.0f * pi * frequency * i / sampleRate);
+        audioBuffer[i] = std::sin(2.0f * pi * frequency * i / exsampleRate)
+        ;
     }
 
     //split audio into segments based on tempo
@@ -59,7 +61,7 @@ int main() {
 
     arma::fvec magnitudes = arma::abs(spectrum);
         arma::uword peakBin = magnitudes.index_max();
-        float peakFreqHz = static_cast<float>(peakBin) * sampleRate / segmentSize;
+        float peakFreqHz = static_cast<float>(peakBin) * exsampleRate / segmentSize;
 
     std::cout << "FFT size: " << spectrum.n_elem
                    << " | peak bin: " << peakBin
@@ -70,34 +72,25 @@ int main() {
 
     }
 
-/* Note identification
-fix this later, but basically the point of this section is to define a range that can be used to identify what note the frequency played is in.
-may need to be changed later in order to improve the accuracy of the note identification as well as to define the note the frequency is as a variable that can be used throughout transcription, not just once?
- for (int i = 0; i < numSegments; i++) {
-    if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
-        std::cout << "Note is B7"
-        int note = B7;
+    /* Note identification
+    fix this later, but basically the point of this section is to define a range that can be used to identify what note the frequency played is in.
+    may need to be changed later in order to improve the accuracy of the note identification as well as to define the note the frequency is as a variable that can be used throughout transcription, not just once?
+    for (int i = 0; i < numSegments; i++) {
+        if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
+            std::cout << "Note is B7"
+            int note[some array size] = B7;
+        } 
+    }
+        ??this could work maybe??
+    */
+
+  int myArray[numSegments]; // 1. Declare a blank array of size numSegments
+
+    // 2. Loop repeats 5 times, automatically moving from index 0 to 4
+    for (int i = 0; i < numSegments; i++) {
+        if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
+            myArray[i] = 'B7'; // assigns note of B7 at the location in the array
+        } 
     } 
- }
-    ??this could work maybe??
-*/
-
-
-
-if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
-    std::cout << "Note is B7";
-}
-
-if (audioPtr[0] > 4186.01 && audioPtr[0] < 4434.92) {
-    std::cout << "Note is C8";
-}
-
-if (audioPtr[0] > 4186.01 && audioPtr[0] < 4434.92) {
-    std::cout << "Note is C8";
-}
-
-if (audioPtr[0] > 4434.92 && audioPtr[0] < 4698.64) {
-    std::cout << "Note is C#";
-    return 0;
 }
 
