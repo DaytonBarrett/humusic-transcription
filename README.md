@@ -1,4 +1,5 @@
-<img width="3039" height="1350" alt="humusic" src="https://github.com/user-attachments/assets/ac66c266-5edd-470b-8741-467758412868" />
+<img width="3039" height="1350" alt="humusic  (2)" src="https://github.com/user-attachments/assets/257cab3b-641a-4ca6-b516-80c4a67c7f12" />
+
 
 Humusic Transcription is a project that converts recorded audio into sheet music written in Western musical notation.
 
@@ -33,8 +34,6 @@ The process:
 | `vendor/` | VexFlow engraving engine and self-hosted fonts |
 | `C++/main.cpp` | The original native FFT transcriber |
 | `scripts/build-www.py` | Builds `www/`, the bundle shipped inside the iOS app |
-| `ios-assets/` | App Store icon and splash generated from the app icon |
-| `IOS.md` | How to build, sign and submit the iOS app |
 
 ## The web transcriber
 
