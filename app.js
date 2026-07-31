@@ -225,6 +225,17 @@ function buildEngravingUnits(runs) {
       if (pos === UNITS_PER_MEASURE) { pos = 0; measureIndex++; }
     }
   }
+
+  // A take almost never stops exactly on a barline, so the last measure is
+  // usually short. Fill the remainder with rests: VexFlow formats voices in
+  // strict mode and throws IncompleteVoice on any measure that doesn't total
+  // four beats, and MusicXML importers expect full measures too.
+  if (pos > 0) {
+    for (const vfDur of decomposeDuration(UNITS_PER_MEASURE - pos)) {
+      units.push({ measureIndex, note: REST, vfDur, tieToNext: false });
+    }
+  }
+
   return units;
 }
 
