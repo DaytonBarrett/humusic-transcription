@@ -13,7 +13,7 @@ int main() {
     //generate audio -> will be changed later to read from recording
     //exsampleRate rate is example sample rate
 
-    const int   exsampleRate = 44100;
+    const int   exsampleRate = 494;
     const int totalSamples = 30 * exsampleRate; //30 seconds total
     std::vector<float> audioBuffer(totalSamples);
     int tempo;
@@ -70,6 +70,8 @@ int main() {
 
     audioPtr += segmentSize; //move pointer to next segment
 
+    
+
     }
 
     /* Note identification
@@ -88,9 +90,12 @@ int main() {
 
     // 2. Loop repeats 5 times, automatically moving from index 0 to 4
     for (int i = 0; i < numSegments; i++) {
-        if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
-            myArray[i] = 'B7'; // assigns note of B7 at the location in the array
-        } 
+        if (audioPtr[0] > 479.82 && audioPtr[0] < 508.35) {
+            myArray[i] = 'B4'; // assigns note of B4 at the location in the array
+        }
+        if (audioPtr[0] > 508.35 && audioPtr[0] < 538.58) {
+            myArray[i] = 'C5'; // assigns note of C5 at the location in the array
+        }
     } 
 }
 
