@@ -1,101 +1,196 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include <iostream>
 #include <numeric>
 #include <cmath>
 #include <armadillo>
+#include <portaudio.h>
+
 #define pi 3.14159265358979323846
 
+// ---------------------------------------------------------------------
+// Standard 12-tone note names, used with a MIDI note number to build
+// a full note name like "A4" or "C#5".
+// ---------------------------------------------------------------------
+const std::vector<std::string> NOTE_NAMES = {
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+};
 
-int main() {
-    
-    //generate audio -> will be changed later to read from recording
-    //exsampleRate rate is example sample rate
-
-    const int   exsampleRate = 494;
-    const int totalSamples = 30 * exsampleRate; //30 seconds total
-    std::vector<float> audioBuffer(totalSamples);
-    int tempo;
-
-    std::cout << "Enter tempo: ";
-    std::cin >> tempo;
-    std::cout << "Sample division " << tempo * 16 << std::endl;
-
-    const float frequency = 440.0f;
-    for (int i = 0; i < totalSamples; i++) {
-        audioBuffer[i] = std::sin(2.0f * pi * frequency * i / exsampleRate)
-        ;
+// ---------------------------------------------------------------------
+// This is the generalized version of the range-checking idea you had
+// commented out (e.g. "if freq is between 479.82 and 508.35 -> B4").
+// Instead of hand-typing a frequency range for every note in every
+// octave, we compute the nearest note mathematically using the
+// standard equal-temperament formula, with A4 = 440 Hz as the anchor:
+//
+//     midiNote = 69 + 12 * log2(freq / 440)
+//
+// Rounding to the nearest integer MIDI note is mathematically
+// equivalent to picking whichever named note's frequency range the
+// peak falls into -- the boundaries between notes sit at the
+// geometric mean of their frequencies, same as the numbers you'd
+// already worked out by hand (e.g. sqrt(493.88 * 523.25) ~= 508.37,
+// matching your B4/C5 boundary of 508.35).
+// ---------------------------------------------------------------------
+std::string frequencyToNote(float freq) {
+    if (freq <= 20.0f) {
+        return "Rest"; // treat near-silence / sub-audible as no note
     }
 
-    //split audio into segments based on tempo
+    float midiFloat = 69.0f + 12.0f * std::log2(freq / 440.0f);
+    int midiNote = static_cast<int>(std::round(midiFloat));
 
-    int numSplits = tempo * 16; 
+    int octave = (midiNote / 12) - 1;
+    int noteIndex = midiNote % 12;
+    if (noteIndex < 0) noteIndex += 12; // guard against negative modulo
+
+    return NOTE_NAMES[noteIndex] + std::to_string(octave);
+}
+
+// ---------------------------------------------------------------------
+// Records `totalSamples` mono float samples from the default input
+// device (microphone) at `sampleRate` using PortAudio, blocking until
+// the recording is complete.
+// ---------------------------------------------------------------------
+std::vector<float> recordAudio(int sampleRate, int totalSamples) {
+    std::vector<float> buffer(totalSamples, 0.0f);
+    PaStream* stream = nullptr;
+    PaError err;
+
+    err = Pa_Initialize();
+    if (err != paNoError) {
+        std::cerr << "PortAudio init error: " << Pa_GetErrorText(err) << "\n";
+        return buffer;
+    }
+
+    err = Pa_OpenDefaultStream(
+        &stream,
+        1,              // 1 input channel (mono)
+        0,              // 0 output channels
+        paFloat32,      // sample format
+        sampleRate,
+        256,            // frames per buffer
+        nullptr,        // no callback -> blocking Pa_ReadStream below
+        nullptr
+    );
+    if (err != paNoError) {
+        std::cerr << "PortAudio open stream error: " << Pa_GetErrorText(err) << "\n";
+        Pa_Terminate();
+        return buffer;
+    }
+
+    err = Pa_StartStream(stream);
+    if (err != paNoError) {
+        std::cerr << "PortAudio start stream error: " << Pa_GetErrorText(err) << "\n";
+        Pa_Terminate();
+        return buffer;
+    }
+
+    std::cout << "Recording for " << (totalSamples / static_cast<float>(sampleRate))
+               << " seconds... play/sing now!\n";
+
+    err = Pa_ReadStream(stream, buffer.data(), totalSamples);
+    if (err != paNoError && err != paInputOverflowed) {
+        std::cerr << "PortAudio read stream error: " << Pa_GetErrorText(err) << "\n";
+    }
+
+    std::cout << "Recording complete.\n\n";
+
+    Pa_StopStream(stream);
+    Pa_CloseStream(stream);
+    Pa_Terminate();
+
+    return buffer;
+}
+
+int main() {
+
+    const int sampleRate = 44100; // realistic mic sample rate (was 494 - too low, caused aliasing)
+    const int totalSamples = 30 * sampleRate; // 30 seconds total
+
+    int tempo;
+    std::cout << "Enter tempo (BPM): ";
+    std::cin >> tempo;
+
+    if (tempo <= 0) {
+        std::cerr << "Tempo must be positive.\n";
+        return 1;
+    }
+
+    std::cout << "Sample division " << tempo * 16 << std::endl;
+
+    // ---- capture real audio from the microphone ----
+    std::vector<float> audioBuffer = recordAudio(sampleRate, totalSamples);
+
+    // ---- split audio into segments based on tempo ----
+    int numSplits = tempo * 16;
     int numSegments = numSplits + 1;
     int segmentSize = totalSamples / numSegments;
 
-    std::cout << "Audio created with " << totalSamples << " samples.\n";
+    if (segmentSize < 64) {
+        std::cerr << "Segment size too small for a useful FFT at this tempo.\n";
+        return 1;
+    }
+
+    std::cout << "Audio captured with " << totalSamples << " samples.\n";
     std::cout << "Splitting " << numSplits << " times into " << numSegments << " segments.\n";
     std::cout << "Each segment will be " << segmentSize << " samples long.\n\n";
 
-    //move pointer through audio (left to right) and print out segment info
-
+    // ---- move pointer through audio (left to right), analyze each segment ----
     float* audioPtr = audioBuffer.data();
-    
+
+    std::vector<float> peakFreqs(numSegments); // peak frequency found in each segment
+
     for (int i = 0; i < numSegments; i++) {
-        
-        int currentSampleIndex = audioPtr - audioBuffer.data();
-    
-    std::cout << "Segment" << (i + 1) << "starts at sample index: " << currentSampleIndex << "\n";
-    std::cout << "Audio value at current sample index: " << audioPtr[0] << "\n";
 
-    //using ffts to analyze the segments
+        int currentSampleIndex = static_cast<int>(audioPtr - audioBuffer.data());
 
-    arma::fvec segmentView(audioPtr, segmentSize, /*copy_aux_mem=*/false);
+        std::cout << "Segment " << (i + 1) << " starts at sample index: " << currentSampleIndex << "\n";
 
-    std::vector<arma::cx_vec> segmentFFTs(numSegments);
-    
-    arma::cx_fvec spectrum = arma::fft(segmentView);
+        // FFT on this segment
+        arma::fvec segmentView(audioPtr, segmentSize, /*copy_aux_mem=*/false);
+        arma::cx_fvec spectrum = arma::fft(segmentView);
 
-    segmentFFTs[i] = arma::conv_to<arma::cx_vec>::from(spectrum);
-
-    arma::fvec magnitudes = arma::abs(spectrum);
+        arma::fvec magnitudes = arma::abs(spectrum);
         arma::uword peakBin = magnitudes.index_max();
-        float peakFreqHz = static_cast<float>(peakBin) * exsampleRate / segmentSize;
+        float peakMagnitude = magnitudes(peakBin);
 
-    std::cout << "FFT size: " << spectrum.n_elem
+        // Only trust the FFT peak past the halfway point of the spectrum is
+        // a mirror image for real input, so only look at the first half.
+        arma::uword halfSize = magnitudes.n_elem / 2;
+        if (peakBin >= halfSize) {
+            peakBin = magnitudes.subvec(0, halfSize - 1).index_max();
+            peakMagnitude = magnitudes(peakBin);
+        }
+
+        float peakFreqHz = static_cast<float>(peakBin) * sampleRate / segmentSize;
+
+        // very quiet segments are treated as silence rather than a "note"
+        const float silenceThreshold = 1.0f;
+        peakFreqs[i] = (peakMagnitude > silenceThreshold) ? peakFreqHz : 0.0f;
+
+        std::cout << "  FFT size: " << spectrum.n_elem
                    << " | peak bin: " << peakBin
-                   << " | approx peak freq: " << peakFreqHz << " Hz\n\n";
+                   << " | approx peak freq: " << peakFreqs[i] << " Hz\n\n";
 
-
-    audioPtr += segmentSize; //move pointer to next segment
-
-    
-
+        audioPtr += segmentSize; // move pointer to next segment
     }
 
-    /* Note identification
-    fix this later, but basically the point of this section is to define a range that can be used to identify what note the frequency played is in.
-    may need to be changed later in order to improve the accuracy of the note identification as well as to define the note the frequency is as a variable that can be used throughout transcription, not just once?
+    // ---- Note identification ----
+    // Uses each segment's stored peak frequency (peakFreqs[i]) rather than
+    // re-reading raw sample values, and covers every octave via
+    // frequencyToNote() instead of a hand-written range per note.
+    std::vector<std::string> myArray(numSegments);
+
     for (int i = 0; i < numSegments; i++) {
-        if (audioPtr[0] > 3951.07 && audioPtr[0] < 4186.01) {
-            std::cout << "Note is B7"
-            int note[some array size] = B7;
-        } 
+        myArray[i] = frequencyToNote(peakFreqs[i]);
     }
-        ??this could work maybe??
-    */
 
-  int myArray[numSegments]; // 1. Declare a blank array of size numSegments
-
-    // 2. Loop repeats 5 times, automatically moving from index 0 to 4
+    // ---- print final transcription ----
+    std::cout << "=== Transcribed notes ===\n";
     for (int i = 0; i < numSegments; i++) {
-        if (audioPtr[0] > 479.82 && audioPtr[0] < 508.35) {
-            myArray[i] = 'B4'; // assigns note of B4 at the location in the array
-        }
-        if (audioPtr[0] > 508.35 && audioPtr[0] < 538.58) {
-            myArray[i] = 'C5'; // assigns note of C5 at the location in the array
-        }
-    } 
+        std::cout << "Segment " << (i + 1) << ": " << myArray[i] << "\n";
+    }
+
+    return 0;
 }
-

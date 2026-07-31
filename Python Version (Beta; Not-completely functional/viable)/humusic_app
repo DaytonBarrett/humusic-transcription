@@ -125,8 +125,12 @@ def callback(indata, frames, time, status):
 def start_recording():
     global recording, audio_data, stream
     audio_data = []
-    stream = sd.InputStream(samplerate=fs, channels=1, callback=callback, device=3)
-    stream.start()
+    try:
+        stream = sd.InputStream(samplerate=fs, channels=1, callback=callback)
+        stream.start()
+    except Exception as e:
+        status_label.config(text=f"Could not open microphone: {e}", fg="red")
+        return
     recording = True
     status_label.config(text="Recording...", fg="red")
     start_btn.config(state=tk.DISABLED)
@@ -146,7 +150,7 @@ def stop_recording():
 
 def analyze_audio():
     if not audio_data:
-        status_label.config(text="No audio recorded!", fg="red")
+        window.after(0, lambda: status_label.config(text="No audio recorded!", fg="red"))
         return
 
     # Combine all recorded chunks
@@ -180,8 +184,8 @@ def analyze_audio():
 
     # pYIN pitch tracking — returns f0 per frame (~11.6ms each), NaN where unvoiced
     if not LIBROSA_OK:
-        status_label.config(text=f"Dominant frequency: {dominant_freq:.2f} Hz (install librosa for transcription)", fg="green")
-        start_btn.config(state=tk.NORMAL)
+        window.after(0, lambda: status_label.config(text=f"Dominant frequency: {dominant_freq:.2f} Hz (install librosa for transcription)", fg="green"))
+        window.after(0, lambda: start_btn.config(state=tk.NORMAL))
         window.after(0, lambda: show_plot(positive_freqs, magnitude, dominant_freq, None, None))
         return
 
@@ -211,9 +215,9 @@ def analyze_audio():
     note_list = [(n, d) for n, d, _ in segments if n]
 
     notes_text = "  ".join(f"{n}({d[0].upper()})" for n, d in note_list[:20])
-    status_label.config(text=f"Done!  Dominant: {dominant_freq:.2f} Hz  |  {len(note_list)} notes", fg="green")
-    notes_label.config(text=notes_text if notes_text else "No pitched notes detected")
-    start_btn.config(state=tk.NORMAL)
+    window.after(0, lambda: status_label.config(text=f"Done!  Dominant: {dominant_freq:.2f} Hz  |  {len(note_list)} notes", fg="green"))
+    window.after(0, lambda: notes_label.config(text=notes_text if notes_text else "No pitched notes detected"))
+    window.after(0, lambda: start_btn.config(state=tk.NORMAL))
 
     # Export MusicXML score
     build_score(segments, bpm)

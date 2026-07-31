@@ -1,0 +1,11 @@
+{
+    "c-cpp-compile-run.cpp-flags": "-Wall -Wextra -g3 -std=c++17",
+    "c-cpp-compile-run.additional-include-paths": [
+        "/opt/homebrew/opt/armadillo/include",
+        "/opt/homebrew/opt/portaudio/include"
+    ],
+    "c-cpp-compile-run.cpp-linker-flags": "-L/opt/homebrew/opt/armadillo/lib -L/opt/homebrew/opt/portaudio/lib -larmadillo -lportaudio",
+    "code-runner.executorMap": {
+        "cpp": "cd $dir && clang++ -std=c++17 -I/opt/homebrew/opt/armadillo/include -I/opt/homebrew/opt/portaudio/include -L/opt/homebrew/opt/armadillo/lib -L/opt/homebrew/opt/portaudio/lib $fileName -larmadillo -lportaudio -o $fileNameWithoutExt && $dir$fileNameWithoutExt"
+    }
+}

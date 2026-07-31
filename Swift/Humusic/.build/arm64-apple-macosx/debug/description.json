@@ -1,0 +1,522 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+    "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic_Humusic.bundle/Assets.xcassets" : {
+      "inputs" : [
+        {
+          "kind" : "directory",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Resources/Assets.xcassets"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "directory",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic_Humusic.bundle/Assets.xcassets"
+        }
+      ]
+    }
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.Humusic-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "fileList" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/sources",
+      "importPath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/AudioRecorder.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/PitchAnalyzer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Components.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/GlassSurface.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Palette.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Typography.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Export/MusicXMLExporter.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/HumusicApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/PitchedNote.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/StaffView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ManuscriptView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/RecordingRail.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/TranscriptionViewModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/DerivedSources/resource_bundle_accessor.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<Humusic-arm64-apple-macosx26.0-debug.module-resources>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "Humusic",
+      "moduleOutputPath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Modules/Humusic.swiftmodule",
+      "objects" : [
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/AudioRecorder.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/PitchAnalyzer.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Components.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/GlassSurface.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Palette.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Typography.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/MusicXMLExporter.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/HumusicApp.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/PitchedNote.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/StaffView.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/ContentView.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/ManuscriptView.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/RecordingRail.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/TranscriptionViewModel.swift.o",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/resource_bundle_accessor.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_AVAILABLE",
+        "-module-cache-path",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "Humusic_main",
+        "-swift-version",
+        "5",
+        "-I",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-L",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-plugin-path",
+        "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "humusic"
+      ],
+      "outputFileMapPath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/AudioRecorder.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/PitchAnalyzer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Components.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/GlassSurface.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Palette.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Typography.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/MusicXMLExporter.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/HumusicApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/PitchedNote.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/StaffView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/ManuscriptView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/RecordingRail.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/TranscriptionViewModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/resource_bundle_accessor.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Modules/Humusic.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/AudioRecorder.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/PitchAnalyzer.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Components.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/GlassSurface.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Palette.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Typography.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Export/MusicXMLExporter.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/HumusicApp.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/PitchedNote.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/StaffView.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ContentView.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ManuscriptView.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/RecordingRail.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/TranscriptionViewModel.swift",
+        "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/DerivedSources/resource_bundle_accessor.swift"
+      ],
+      "tempsPath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "Humusic" : [
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "-module-name",
+      "Humusic",
+      "-package-name",
+      "humusic",
+      "-c",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/AudioRecorder.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/PitchAnalyzer.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Components.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/GlassSurface.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Palette.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Typography.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Export/MusicXMLExporter.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/HumusicApp.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/PitchedNote.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/StaffView.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ContentView.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ManuscriptView.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/RecordingRail.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/TranscriptionViewModel.swift",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/DerivedSources/resource_bundle_accessor.swift",
+      "-I",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_AVAILABLE",
+      "-module-cache-path",
+      "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "Humusic_main",
+      "-swift-version",
+      "5",
+      "-I",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-L",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-plugin-path",
+      "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "humusic",
+      "-driver-use-frontend-path",
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "Humusic" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic-entitlement.plist"
+    },
+    "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/AudioRecorder.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Audio/PitchAnalyzer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Components.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/GlassSurface.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Palette.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/DesignSystem/Typography.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Export/MusicXMLExporter.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/HumusicApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/PitchedNote.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Notation/StaffView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/ManuscriptView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/RecordingRail.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/Sources/Humusic/Views/TranscriptionViewModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/DerivedSources/resource_bundle_accessor.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/sources"
+    },
+    "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/AudioRecorder.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Components.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/GlassSurface.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/HumusicApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/ManuscriptView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/MusicXMLExporter.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Palette.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/PitchAnalyzer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/PitchedNote.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/RecordingRail.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/StaffView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/TranscriptionViewModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/Typography.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.build/resource_bundle_accessor.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/Humusic.product/Objects.LinkFileList"
+    },
+    "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/daytonbarrett/humusic-transcription/Swift/Humusic/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+    }
+  }
+}

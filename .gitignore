@@ -1,0 +1,6 @@
+# C++ build output
+C++/output/
+
+# Python
+__pycache__/
+*.pyc
