@@ -4,3 +4,16 @@ C++/output/
 # Python
 __pycache__/
 *.pyc
+
+# Node / Capacitor
+node_modules/
+package-lock.json
+
+# Generated iOS web bundle (rebuild with `npm run build`)
+www/
+
+# Native project scaffolded by `npx cap add ios`
+ios/
+
+# macOS
+.DS_Store

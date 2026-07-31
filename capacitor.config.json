@@ -1,0 +1,17 @@
+{
+  "appId": "com.daytonbarrett.humusic",
+  "appName": "humusic",
+  "webDir": "www",
+  "ios": {
+    "backgroundColor": "#EDE8DE",
+    "contentInset": "never",
+    "scrollEnabled": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 600,
+      "backgroundColor": "#EDE8DE",
+      "showSpinner": false
+    }
+  }
+}

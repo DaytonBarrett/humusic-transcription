@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="humusic transcriber — record, transcribe, export MusicXML." />
+  <meta name="theme-color" content="#EDE8DE" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="humusic" />
+  <link rel="icon" type="image/png" href="images/humusic-icon.png" />
+  <link rel="apple-touch-icon" href="images/humusic-icon.png" />
+  <title>humusic — Transcriber</title>
+  <link rel="stylesheet" href="base.css" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="console">
+
+  <div class="backdrop" aria-hidden="true">
+    <div class="backdrop__staves"></div>
+    <div class="backdrop__field"></div>
+  </div>
+
+  <header class="masthead">
+    <div class="masthead__brand">
+      <img class="appmark" src="images/humusic-icon.png" alt="" width="26" height="26" />
+      <span class="wordmark">hu<em>music</em></span>
+      <span class="masthead__rule" aria-hidden="true"></span>
+      <span class="label">Transcriber</span>
+    </div>
+
+    <dl class="masthead__meta">
+      <div class="cell"><dt class="label">State</dt><dd class="mono" id="metaState">IDLE</dd></div>
+      <div class="cell"><dt class="label">Rate</dt><dd class="mono" id="metaRate">—</dd></div>
+      <div class="cell"><dt class="label">Metre</dt><dd class="mono">4/4</dd></div>
+    </dl>
+  </header>
+
+  <main class="console__grid">
+
+    <section class="col col--capture" aria-labelledby="cap-h">
+      <div class="col__head">
+        <span class="seq" aria-hidden="true">I</span>
+        <h2 class="label" id="cap-h">Capture</h2>
+      </div>
+
+      <div class="panel capture">
+        <button class="rec" id="recordBtn" type="button" aria-label="Start recording">
+          <span class="rec__dot" aria-hidden="true"></span>
+          <span class="rec__label" id="recordLabel">Record</span>
+          <span class="rec__time mono" id="timerText">00:00</span>
+        </button>
+
+        <div class="meter" aria-hidden="true">
+          <div class="meter__fill" id="levelFill"></div>
+        </div>
+
+        <dl class="rows">
+          <div class="row">
+            <dt class="label">Tempo</dt>
+            <dd class="row__v bpm">
+              <input id="bpmInput" type="number" min="40" max="240" step="1"
+                     value="100" inputmode="numeric" aria-label="Tempo in beats per minute" />
+              <span class="bpm__unit">bpm</span>
+            </dd>
+          </div>
+          <div class="row">
+            <dt class="label">Detected</dt>
+            <dd class="row__v row__v--big" id="pitchNote">—</dd>
+          </div>
+        </dl>
+
+        <div class="cents">
+          <div class="cents__head">
+            <span class="label">Deviation</span>
+            <span class="label mono" id="centsRead"></span>
+          </div>
+          <div class="cents__track" id="centsTrack">
+            <span class="cents__mid" aria-hidden="true"></span>
+            <span class="cents__needle" id="centsNeedle"></span>
+          </div>
+          <div class="cents__legend">
+            <span class="label">−50¢</span><span class="label">0</span><span class="label">+50¢</span>
+          </div>
+        </div>
+      </div>
+
+      <p class="col__note">
+        Pitch is resolved with the YIN autocorrelation estimator, then
+        quantized to a sixteenth-note grid derived from the tempo above.
+      </p>
+    </section>
+
+    <section class="col col--score" aria-labelledby="sc-h">
+      <div class="col__head">
+        <span class="seq" aria-hidden="true">II</span>
+        <h2 class="label" id="sc-h">Score</h2>
+        <span class="col__head-meta mono" id="scoreMeta"></span>
+      </div>
+
+      <div class="panel score">
+        <div class="score__empty" id="scoreEmpty">
+          <p class="display score__empty-title">Nothing<br /><em>engraved</em> yet.</p>
+          <p class="score__empty-body">
+            Set a tempo, record a monophonic line, and the transcription
+            is engraved here in common notation — ready to export.
+          </p>
+        </div>
+        <div class="score__paper" id="scoreContainer" hidden></div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn--primary" id="exportBtn" type="button" disabled>
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M7 1v8M4 6.5 7 9.5l3-3M1.5 11.5v1h11v-1"
+                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Export MusicXML
+        </button>
+        <button class="btn" id="clearBtn" type="button" disabled>Clear</button>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="colophon">
+    <a class="label colophon__back" href="index.html" data-web-only>← Publication</a>
+    <span class="label">YIN detection</span>
+    <span class="label">MusicXML 4.0</span>
+    <span class="label">Dayton Barrett</span>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="vendor/vexflow.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
