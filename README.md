@@ -33,8 +33,6 @@ The process:
 | `vendor/` | VexFlow engraving engine and self-hosted fonts |
 | `C++/main.cpp` | The original native FFT transcriber |
 | `scripts/build-www.py` | Builds `www/`, the bundle shipped inside the iOS app |
-| `ios-assets/` | App Store icon and splash generated from the app icon |
-| `IOS.md` | How to build, sign and submit the iOS app |
 
 ## The web transcriber
 
