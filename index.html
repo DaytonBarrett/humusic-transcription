@@ -81,10 +81,11 @@
         <dl class="rows">
           <div class="row"><dt class="label">Detection</dt><dd class="row__v">YIN autocorrelation</dd></div>
           <div class="row"><dt class="label">Reference</dt><dd class="row__v">A4 = 440 Hz</dd></div>
-          <div class="row"><dt class="label">Grid</dt><dd class="row__v">1/16 at set tempo</dd></div>
+          <div class="row"><dt class="label">Grid</dt><dd class="row__v">1/16 and triplets</dd></div>
           <div class="row"><dt class="label">Metre</dt><dd class="row__v">4/4</dd></div>
           <div class="row"><dt class="label">Clef</dt><dd class="row__v">Chosen from your range</dd></div>
           <div class="row"><dt class="label">Metronome</dt><dd class="row__v">4/4 click while recording</dd></div>
+          <div class="row"><dt class="label">Playback</dt><dd class="row__v">Piano · guitar · sax · synth</dd></div>
           <div class="row"><dt class="label">Export</dt><dd class="row__v">MusicXML 4.0</dd></div>
           <div class="row"><dt class="label">Platform</dt><dd class="row__v">Web · iOS</dd></div>
         </dl>
@@ -100,7 +101,7 @@
       <div class="ticker__track" id="tickerTrack">
         <div class="ticker__group">
           <span>Record</span><i>·</i><span>Detect</span><i>·</i><span>Quantise</span><i>·</i>
-          <span>Engrave</span><i>·</i><span>Export</span><i>·</i>
+          <span>Engrave</span><i>·</i><span>Play</span><i>·</i><span>Export</span><i>·</i>
         </div>
       </div>
     </div>
@@ -137,8 +138,11 @@
           <span class="entry__num mono">03</span>
           <div class="entry__body">
             <h3>Quantisation</h3>
-            <p>Audio is divided against a sixteenth-note grid derived from the tempo
-              you set, so rhythm is measured rather than guessed.</p>
+            <p>Audio is divided against a grid of twelfths of a beat derived from the
+              tempo you set, so rhythm is measured rather than guessed. Twelve divides
+              by both four and three, which is what lets a sixteenth and a triplet be
+              measured exactly on the same grid. Each beat is then read as straight or
+              as a triplet according to where the notes in it actually fell.</p>
           </div>
         </li>
         <li class="entry">
@@ -155,13 +159,24 @@
         <li class="entry">
           <span class="entry__num mono">05</span>
           <div class="entry__body">
+            <h3>Playback</h3>
+            <p>Hear the transcription rather than the recording — as a piano, a plucked
+              guitar, a saxophone or a plain synth. What sounds is the engraved model,
+              so a wrong note is audible as a wrong note instead of having to be read
+              off the staff. Every voice is synthesised on the spot; nothing is
+              downloaded, and the page still runs with no network at all.</p>
+          </div>
+        </li>
+        <li class="entry">
+          <span class="entry__num mono">06</span>
+          <div class="entry__body">
             <h3>Export</h3>
             <p>One file, MusicXML 4.0, built from the same model that drew the page.
               The exported score and the printed score cannot disagree.</p>
           </div>
         </li>
         <li class="entry">
-          <span class="entry__num mono">06</span>
+          <span class="entry__num mono">07</span>
           <div class="entry__body">
             <h3>Locality</h3>
             <p>Every stage runs on your own device. No recording is uploaded, and no

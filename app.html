@@ -97,9 +97,10 @@
 
       <p class="col__note">
         Pitch is resolved with the YIN autocorrelation estimator, then
-        quantized to a sixteenth-note grid derived from the tempo above.
-        The clef is chosen from the range you played. Use headphones with
-        the metronome on, or the click is recorded along with the line.
+        quantized against the tempo above — sixteenths and triplets alike,
+        each beat read as straight or swung from how you played it. The
+        clef is chosen from the range you played. Use headphones with the
+        metronome on, or the click is recorded along with the line.
       </p>
     </section>
 
@@ -122,6 +123,26 @@
       </div>
 
       <div class="actions">
+        <button class="btn" id="playBtn" type="button" disabled aria-label="Play the transcription">
+          <svg class="play__icon" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path class="play__glyph" d="M3.5 1.8v10.4L12 7 3.5 1.8Z"
+                  fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            <path class="stop__glyph" d="M3.2 3.2h7.6v7.6H3.2z"
+                  fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          </svg>
+          <span id="playLabel">Play</span>
+        </button>
+
+        <label class="voice" for="voiceSelect">
+          <span class="label voice__label">Voice</span>
+          <select class="voice__select mono" id="voiceSelect" disabled>
+            <option value="piano" selected>Piano</option>
+            <option value="guitar">Guitar</option>
+            <option value="sax">Saxophone</option>
+            <option value="synth">Synth</option>
+          </select>
+        </label>
+
         <button class="btn btn--primary" id="exportBtn" type="button" disabled>
           <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M7 1v8M4 6.5 7 9.5l3-3M1.5 11.5v1h11v-1"

@@ -377,9 +377,62 @@
 .actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--s3);
   margin-top: var(--s4);
 }
+
+/* ──────────────────────────────────────────────────────────
+   PLAYBACK
+   One button that swaps glyph rather than two that trade
+   places — a control that moves is a control you have to find
+   again mid-phrase.
+   ────────────────────────────────────────────────────────── */
+.play__icon { flex: none; }
+.play__glyph { display: inline; }
+.stop__glyph { display: none; }
+#playBtn.is-playing .play__glyph { display: none; }
+#playBtn.is-playing .stop__glyph { display: inline; }
+#playBtn.is-playing {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* The voice picker reads as a field on the same rule as the buttons, not as
+   a browser dropdown parked next to them. */
+.voice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 40px;
+  padding: 0 var(--s3) 0 var(--s4);
+  border: var(--rule);
+}
+.voice__label { color: var(--ink-3); }
+.voice:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.voice__select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: none;
+  padding: 0 var(--s4) 0 0;
+  font-size: var(--fs-11);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  cursor: pointer;
+  /* The chevron is drawn here because a native select arrow cannot be
+     styled to match the hairline rules the rest of the console is built on. */
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 6px center, right 2px center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.voice__select:focus { outline: none; }
+.voice:has(.voice__select:disabled) { opacity: 0.35; }
+.voice__select:disabled { cursor: not-allowed; }
 
 /* ──────────────────────────────────────────────────────────
    COLOPHON

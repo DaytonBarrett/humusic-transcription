@@ -240,7 +240,7 @@ function measureFrames(samples, sampleRate, segmentSamples) {
 
 /* ══════════════════════════════════════════════════════════
    NOTE TRACKING
-   Groups the per-16th measurements into notes. This is the step
+   Groups the per-frame measurements into notes. This is the step
    that decides rhythm: every group boundary is a new note, so
    anything that fragments a group writes a held note out as a
    run of short ones.
@@ -253,7 +253,7 @@ function measureFrames(samples, sampleRate, segmentSamples) {
 ══════════════════════════════════════════════════════════ */
 
 // A note struck again at the same pitch has no pitch change to find it by,
-// so it has to be found by its attack. On a 16th grid an attack and a swell
+// so it has to be found by its attack. At this grid an attack and a swell
 // out of a dip look much alike in energy alone, so the test is deliberately
 // narrow: the sound must have all but stopped — down where only the release
 // hysteresis was still holding the note open — and then come back loud. That
@@ -269,8 +269,11 @@ const ONSET_RISE_RATIO = 2.5;
 const NEW_NOTE_SEMITONES = 0.7;
 
 // A stretch this long with sound but no measurable pitch is unpitched
-// material in its own right, not a dropout to be papered over.
-const MAX_DROPOUT_FRAMES = 2;
+// material in its own right, not a dropout to be papered over. It is a
+// duration rather than a frame count because the frame is now a twelfth of
+// a beat: at 200bpm that is 25ms, and two frames of it would be far too
+// short a bridge to repair anything.
+const MAX_DROPOUT_SECONDS = 0.08;
 
 function median(values) {
   const sorted = values.slice().sort((a, b) => a - b);
@@ -311,7 +314,7 @@ function smoothPitch(frames) {
 // test, and it is the honest one: if the sound continued at the same pitch
 // either side, the note continued. A gap that actually falls silent is left
 // alone, because a 16th of silence is a rest and the score should show it.
-function fillDropouts(frames) {
+function fillDropouts(frames, maxFillFrames) {
   for (let i = 1; i < frames.length; i++) {
     if (frames[i].voiced) continue;
     let end = i;
@@ -323,7 +326,7 @@ function fillDropouts(frames) {
 
     const before = frames[i - 1];
     const after = frames[end];
-    if (audible && end - i <= MAX_DROPOUT_FRAMES && before.voiced && after?.voiced
+    if (audible && end - i <= maxFillFrames && before.voiced && after?.voiced
         && Math.abs(before.midi - after.midi) < NEW_NOTE_SEMITONES) {
       for (let k = i; k < end; k++) {
         frames[k].voiced = true;
@@ -408,17 +411,147 @@ function mergeUnarticulatedRuns(runs) {
   return merged;
 }
 
-/* Returns [{ note, units }] — one entry per note, `units` counted in 16ths.
-   Runs rather than a flat per-16th array, because two adjacent notes at the
-   same pitch are a distinction a flat array cannot carry. */
+/* ══════════════════════════════════════════════════════════
+   THE RHYTHMIC GRID
+   One unit is a twelfth of a quarter note. Twelve is the
+   smallest number that divides cleanly by both 4 and 3, so the
+   same grid measures a sixteenth (3 units) and an eighth-note
+   triplet (4 units) exactly, with no rounding either way. A
+   sixteenth grid cannot express a triplet at all: a third of a
+   beat is 1.33 sixteenths, so triplets were previously rounded
+   into a limping 2+1 or 1+2 and written as straight sixteenths.
+══════════════════════════════════════════════════════════ */
+const UNITS_PER_QUARTER = 12;
+const UNITS_PER_BEAT = UNITS_PER_QUARTER; // 4/4 throughout, so a beat is a quarter
+const BINARY_OFFSETS = [0, 3, 6, 9];      // sixteenths within a beat
+const TRIPLET_OFFSETS = [0, 4, 8];        // eighth-note triplets within a beat
+
+// A beat is only read as a triplet when what was played fits the triplet grid
+// better than the straight one, by this much per onset. The margin has to be
+// small: the two grids are never far apart. A perfect triplet sits one unit
+// off the straight grid at each onset, so that one unit is the entire signal,
+// and a measured onset is itself good to about a unit — the pitch window is
+// wider than a frame, so a note change smears across the frame that straddles
+// it. Demand much more than this and no real triplet is ever found; demand
+// much less and straight rhythm sprouts tuplets on measurement noise.
+const TRIPLET_MARGIN = 0.35;
+
+// And the fit has to be good in absolute terms, not merely better. Straight
+// sixteenths miss the triplet grid by an average of over a unit, so this
+// alone rejects them, and it keeps a beat whose onsets are scattered from
+// being read as a triplet just because straight fits it even worse.
+const TRIPLET_MAX_ERROR = 1;
+
+function nearestOffsetError(position, offsets) {
+  let best = Infinity;
+  for (const offset of offsets) best = Math.min(best, Math.abs(position - offset));
+  return best;
+}
+
+/* Returns [{ note, units }] — one entry per note, `units` in twelfths of a
+   quarter. Runs rather than a flat per-frame array, because two adjacent
+   notes at the same pitch are a distinction a flat array cannot carry. */
 function analyzeRecording(samples, sampleRate, bpm) {
-  const sixteenthDur = 60 / bpm / 4;
-  const segmentSamples = Math.max(1, Math.round(sixteenthDur * sampleRate));
+  const frameDur = 60 / bpm / UNITS_PER_QUARTER;
+  const segmentSamples = Math.max(1, Math.round(frameDur * sampleRate));
 
   const frames = measureFrames(samples, sampleRate, segmentSamples);
   smoothPitch(frames);
-  fillDropouts(frames);
+  fillDropouts(frames, Math.max(1, Math.round(MAX_DROPOUT_SECONDS / frameDur)));
   return mergeUnarticulatedRuns(trackNotes(frames));
+}
+
+/* ══════════════════════════════════════════════════════════
+   BEAT CLASSIFICATION
+   Decides, beat by beat, whether what was played divides that
+   beat in two or in three, by asking which grid the onsets
+   inside it actually landed on. Then it snaps them to whichever
+   grid won, so the engraver gets exact durations rather than
+   the near-misses a performance produces.
+
+   The decision is per beat rather than per piece because that
+   is how triplets occur — a bar of straight eighths with one
+   triplet beat in it is ordinary music, and a piece-wide
+   setting could not write it down.
+══════════════════════════════════════════════════════════ */
+function classifyBeats(runs) {
+  const totalUnits = runs.reduce((sum, run) => sum + run.units, 0);
+  const beatCount = Math.max(1, Math.ceil(totalUnits / UNITS_PER_BEAT));
+  const isTriplet = new Array(beatCount).fill(false);
+
+  // Onsets are the run boundaries: where one note stops and the next starts.
+  // The very first onset is the downbeat and tells us nothing about how the
+  // beat is divided, so it is not evidence either way.
+  const onsets = [];
+  let at = 0;
+  for (const run of runs) {
+    if (at > 0) onsets.push(at);
+    at += run.units;
+  }
+
+  for (let beat = 0; beat < beatCount; beat++) {
+    const start = beat * UNITS_PER_BEAT;
+    const inside = onsets.filter((o) => o > start && o < start + UNITS_PER_BEAT);
+    if (!inside.length) continue; // nothing subdivides this beat
+
+    let binaryError = 0;
+    let tripletError = 0;
+    for (const onset of inside) {
+      const position = onset - start;
+      binaryError += nearestOffsetError(position, BINARY_OFFSETS);
+      tripletError += nearestOffsetError(position, TRIPLET_OFFSETS);
+    }
+    isTriplet[beat] = tripletError / inside.length < TRIPLET_MAX_ERROR
+      && tripletError + TRIPLET_MARGIN * inside.length < binaryError;
+  }
+
+  return isTriplet;
+}
+
+// Pulls every run boundary onto the grid its beat was read as — the last one
+// included, since a take that stops mid-grid otherwise leaves a length no
+// duration can express, and the leftover silently vanishes from the bar.
+//
+// Runs that collapse to nothing in the process are dropped: a sliver between
+// two onsets that snap to the same place was never a note. If that leaves
+// nothing at all, the take was shorter than a single grid step, and one step
+// of the note that was there beats showing an empty score.
+function snapRunsToGrid(runs, isTriplet) {
+  const gridFor = (position) => {
+    const beat = Math.floor(position / UNITS_PER_BEAT);
+    const start = beat * UNITS_PER_BEAT;
+    const offsets = isTriplet[beat] ? TRIPLET_OFFSETS : BINARY_OFFSETS;
+    // The next downbeat is always a candidate: it closes the last subdivision.
+    return offsets.map((offset) => start + offset).concat(start + UNITS_PER_BEAT);
+  };
+
+  const snapPosition = (position) => {
+    let best = null;
+    let bestError = Infinity;
+    for (const candidate of gridFor(position)) {
+      const error = Math.abs(position - candidate);
+      if (error < bestError) { best = candidate; bestError = error; }
+    }
+    return best;
+  };
+
+  const snapped = [];
+  let at = 0;
+  let cursor = 0;
+  for (const run of runs) {
+    at += run.units;
+    const end = snapPosition(at);
+    if (end > cursor) {
+      snapped.push({ note: run.note, units: end - cursor, startedByOnset: run.startedByOnset });
+      cursor = end;
+    }
+  }
+
+  if (!snapped.length) {
+    const sounded = runs.find((run) => run.note !== REST) || runs[0];
+    return [{ note: sounded.note, units: BINARY_OFFSETS[1], startedByOnset: false }];
+  }
+  return snapped;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -497,72 +630,116 @@ function chooseClef(runs) {
    Both the on-screen score and the MusicXML export are built
    from this single model, so they cannot drift apart.
 ══════════════════════════════════════════════════════════ */
-const UNITS_PER_MEASURE = 16; // 4/4, in 16th-note units
+const UNITS_PER_MEASURE = UNITS_PER_QUARTER * 4; // 4/4
 
-// Largest-to-smallest canonical duration units; greedy decomposition
-// over this set is exact for every integer 1..16 (verified by hand:
-// 5=4+1, 7=6+1, 9=8+1, 10=8+2, 11=8+3, 13=12+1, 14=12+2, 15=12+3).
+// Largest-to-smallest canonical duration units. Greedy decomposition over
+// this set is exact for every multiple of 3 up to a full bar — which is
+// every length a straight beat can produce, since the finest straight value
+// is a sixteenth at 3 units. Lengths off that lattice are triplet lengths
+// and go through the tuplet path below instead.
 const DURATION_STEPS = [
-  [16, 'w'], [12, 'hd'], [8, 'h'], [6, 'qd'], [4, 'q'], [3, '8d'], [2, '8'], [1, '16'],
+  [48, 'w'], [36, 'hd'], [24, 'h'], [18, 'qd'], [12, 'q'], [9, '8d'], [6, '8'], [3, '16'],
 ];
 
-// VexFlow token → [MusicXML note-type, dot count, duration in 16ths]
+// Inside a triplet beat the written value is what a reader sees — an eighth —
+// while the sounding length is two thirds of it. Three triplet eighths (4
+// units each) fill the beat, and two of them merge into a written quarter.
+const TRIPLET_STEPS = [[8, 'q'], [4, '8']];
+
+// VexFlow token → [MusicXML note-type, dot count, written length in units]
 const XML_DURATION = {
-  w:  ['whole',   0, 16],
-  hd: ['half',    1, 12],
-  h:  ['half',    0, 8],
-  qd: ['quarter', 1, 6],
-  q:  ['quarter', 0, 4],
-  '8d': ['eighth', 1, 3],
-  '8':  ['eighth', 0, 2],
-  '16': ['16th',   0, 1],
+  w:  ['whole',   0, 48],
+  hd: ['half',    1, 36],
+  h:  ['half',    0, 24],
+  qd: ['quarter', 1, 18],
+  q:  ['quarter', 0, 12],
+  '8d': ['eighth', 1, 9],
+  '8':  ['eighth', 0, 6],
+  '16': ['16th',   0, 3],
 };
 
-function decomposeDuration(units) {
+function decomposeSteps(units, steps) {
   const tokens = [];
   let remaining = units;
-  for (const [u, dur] of DURATION_STEPS) {
+  for (const [u, dur] of steps) {
     while (remaining >= u) { tokens.push(dur); remaining -= u; }
   }
   return tokens;
 }
 
-// Splits runs across measure boundaries and decomposes each piece into
-// duration tokens, threading `tieToNext` through both within-piece ties
-// (e.g. a 5-unit run becomes a tied quarter + 16th) and cross-measure
-// ties (a run that spans a barline).
-function buildEngravingUnits(runs) {
-  const units = [];
-  let pos = 0;
-  let measureIndex = 0;
+const decomposeDuration = (units) => decomposeSteps(units, DURATION_STEPS);
 
-  for (const run of runs) {
-    let remaining = run.units;
-    while (remaining > 0) {
-      const avail = UNITS_PER_MEASURE - pos;
-      const take = Math.min(remaining, avail);
-      const isFinalPieceOfRun = take === remaining;
-      const tokens = decomposeDuration(take);
-
-      tokens.forEach((vfDur, idx) => {
-        const isFinalToken = idx === tokens.length - 1;
-        const tieToNext = run.note !== REST && (!isFinalToken || !isFinalPieceOfRun);
-        units.push({ measureIndex, note: run.note, vfDur, tieToNext });
-      });
-
-      pos += take;
-      remaining -= take;
-      if (pos === UNITS_PER_MEASURE) { pos = 0; measureIndex++; }
+// Groups the beats into the stretches the engraver can treat as one unit of
+// notation. Consecutive straight beats merge, so a half note across two of
+// them stays a half note rather than two tied quarters. A triplet beat never
+// merges with anything: its contents are written against a different grid,
+// and a tuplet bracket cannot span a beat it does not own. Bar lines always
+// break a span, since no note may be written through one.
+function buildSpans(totalUnits, isTriplet) {
+  const spans = [];
+  const beats = Math.ceil(totalUnits / UNITS_PER_BEAT);
+  for (let beat = 0; beat < beats; beat++) {
+    const start = beat * UNITS_PER_BEAT;
+    const triplet = !!isTriplet[beat];
+    const previous = spans[spans.length - 1];
+    if (previous && !triplet && !previous.triplet && start % UNITS_PER_MEASURE !== 0) {
+      previous.end = start + UNITS_PER_BEAT;
+    } else {
+      spans.push({ start, end: start + UNITS_PER_BEAT, triplet });
     }
   }
+  return spans;
+}
+
+// Splits runs across span boundaries and decomposes each piece into duration
+// tokens, threading `tieToNext` through both within-piece ties (a 15-unit run
+// becomes a tied dotted quarter + sixteenth) and cross-span ties (a run that
+// spans a barline, or that runs from a straight beat into a triplet one).
+function buildEngravingUnits(runs, isTriplet) {
+  const played = runs.reduce((sum, run) => sum + run.units, 0);
 
   // A take almost never stops exactly on a barline, so the last measure is
   // usually short. Fill the remainder with rests: VexFlow formats voices in
   // strict mode and throws IncompleteVoice on any measure that doesn't total
   // four beats, and MusicXML importers expect full measures too.
-  if (pos > 0) {
-    for (const vfDur of decomposeDuration(UNITS_PER_MEASURE - pos)) {
-      units.push({ measureIndex, note: REST, vfDur, tieToNext: false });
+  const shortfall = (UNITS_PER_MEASURE - (played % UNITS_PER_MEASURE)) % UNITS_PER_MEASURE;
+  const events = shortfall ? [...runs, { note: REST, units: shortfall }] : runs;
+
+  const spans = buildSpans(played + shortfall, isTriplet);
+  const units = [];
+  let position = 0;
+  let spanIndex = 0;
+
+  for (const run of events) {
+    let remaining = run.units;
+    while (remaining > 0) {
+      while (spanIndex < spans.length - 1 && position >= spans[spanIndex].end) spanIndex++;
+      const span = spans[spanIndex];
+      const take = Math.min(remaining, span.end - position);
+      const isFinalPieceOfRun = take === remaining;
+
+      // A note filling a whole triplet beat is just a quarter note. It is
+      // only a tuplet when the beat is actually divided into three.
+      const inTuplet = span.triplet && take < UNITS_PER_BEAT;
+      const tokens = inTuplet
+        ? decomposeSteps(take, TRIPLET_STEPS)
+        : decomposeDuration(take);
+      const tupletId = inTuplet ? `tuplet-${span.start}` : null;
+
+      tokens.forEach((vfDur, idx) => {
+        const isFinalToken = idx === tokens.length - 1;
+        const tieToNext = run.note !== REST && (!isFinalToken || !isFinalPieceOfRun);
+        units.push({
+          measureIndex: Math.floor(position / UNITS_PER_MEASURE),
+          note: run.note,
+          vfDur,
+          tieToNext,
+          tupletId,
+        });
+      });
+
+      position += take;
+      remaining -= take;
     }
   }
 
@@ -581,12 +758,25 @@ function modelFromRuns(runs) {
   const played = runs.slice(first, last);
   if (!played.length) return null;
 
-  const units = buildEngravingUnits(played);
+  // Quantizing happens here rather than during analysis because it depends on
+  // where beat one is, and beat one is the first note played — which is only
+  // known once the leading silence has been trimmed.
+  const isTriplet = classifyBeats(played);
+  const snapped = snapRunsToGrid(played, isTriplet);
+
+  const units = buildEngravingUnits(snapped, isTriplet);
   if (!units.length) return null;
   const numMeasures = units[units.length - 1].measureIndex + 1;
   const groups = Array.from({ length: numMeasures }, () => []);
   units.forEach((u, i) => groups[u.measureIndex].push(i));
-  return { units, numMeasures, groups, clef: chooseClef(played) };
+  return {
+    units,
+    numMeasures,
+    groups,
+    clef: chooseClef(snapped),
+    runs: snapped,
+    hasTriplets: isTriplet.some(Boolean),
+  };
 }
 
 function noteNameToVexKey(name) {
@@ -601,7 +791,11 @@ function noteNameToVexKey(name) {
    voice → type → dot → accidental → notations); getting that
    order wrong is the usual reason an importer rejects a file.
 ══════════════════════════════════════════════════════════ */
-const XML_DIVISIONS = 4; // divisions per quarter ⇒ one 16th = 1 division
+// Divisions per quarter. Twelve, matching the grid, so both a sixteenth (3)
+// and a triplet eighth (4) come out as whole numbers — MusicXML durations
+// must be integers, and a divisions value that cannot express a triplet is
+// the usual reason tuplets arrive in a notation program subtly out of time.
+const XML_DIVISIONS = UNITS_PER_QUARTER;
 
 function xmlEscape(s) {
   return String(s)
@@ -670,9 +864,18 @@ function buildMusicXML(runs, bpm, options = {}) {
 
     for (const i of groups[m]) {
       const u = units[i];
-      const [xmlType, dots, duration] = XML_DURATION[u.vfDur];
+      const [xmlType, dots, written] = XML_DURATION[u.vfDur];
       const tieStop = i > 0 && units[i - 1].tieToNext;
       const tieStart = u.tieToNext;
+
+      // A tuplet member is written as one value and sounds as another: three
+      // in the time of two, so two thirds of the written length. The grid is
+      // twelfths of a quarter precisely so that division stays exact.
+      const inTuplet = !!u.tupletId;
+      const duration = inTuplet ? (written * 2) / 3 : written;
+      const tupletStart = inTuplet && (i === 0 || units[i - 1].tupletId !== u.tupletId);
+      const tupletStop = inTuplet
+        && (i === units.length - 1 || units[i + 1].tupletId !== u.tupletId);
 
       out.push('      <note>');
 
@@ -701,11 +904,19 @@ function buildMusicXML(runs, bpm, options = {}) {
       out.push(`        <type>${xmlType}</type>`);
       for (let d = 0; d < dots; d++) out.push('        <dot/>');
       if (accidental) out.push(`        <accidental>${accidental}</accidental>`);
+      if (inTuplet) {
+        out.push('        <time-modification>');
+        out.push('          <actual-notes>3</actual-notes>');
+        out.push('          <normal-notes>2</normal-notes>');
+        out.push('        </time-modification>');
+      }
 
-      if (tieStop || tieStart) {
+      if (tieStop || tieStart || tupletStart || tupletStop) {
         out.push('        <notations>');
         if (tieStop)  out.push('          <tied type="stop"/>');
         if (tieStart) out.push('          <tied type="start"/>');
+        if (tupletStart) out.push('          <tuplet type="start" bracket="yes"/>');
+        if (tupletStop)  out.push('          <tuplet type="stop"/>');
         out.push('        </notations>');
       }
 
@@ -827,10 +1038,31 @@ function renderScore(runs, container) {
     if (m === numMeasures - 1) stave.setEndBarType(VF.Barline.type.END);
 
     const notesForMeasure = groups[m].map((i) => staveNotes[i]);
+
+    // Tuplets have to exist before the voice is formatted. Constructing one
+    // is what applies the 2/3 tick multiplier to its notes, and without that
+    // three triplet eighths count as three straight eighths — the bar then
+    // measures four and a half beats and strict formatting rejects it.
+    const tuplets = [];
+    let group = [];
+    let groupId = null;
+    const closeGroup = () => {
+      if (group.length > 1) {
+        tuplets.push(new VF.Tuplet(group, { num_notes: 3, notes_occupied: 2 }));
+      }
+      group = [];
+    };
+    groups[m].forEach((i) => {
+      const id = units[i].tupletId;
+      if (id !== groupId) { closeGroup(); groupId = id; }
+      if (id) group.push(staveNotes[i]);
+    });
+    closeGroup();
+
     const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(true);
     voice.addTickables(notesForMeasure);
 
-    measures.push({ stave, voice, notes: notesForMeasure });
+    measures.push({ stave, voice, notes: notesForMeasure, tuplets });
   }
 
   // applyAccidentals reads one voice as one measure, which is exactly how the
@@ -843,7 +1075,7 @@ function renderScore(runs, container) {
   // draws stems for the notes it owns. Beaming after the voice is drawn
   // leaves both behind: two stems on every beamed note, plus the flags the
   // note drew when it still thought it was unbeamed.
-  for (const { stave, voice, notes } of measures) {
+  for (const { stave, voice, notes, tuplets } of measures) {
     // beam_rests:false (the default) correctly breaks beam groups at rests.
     const beams = VF.Beam.generateBeams(notes);
 
@@ -851,6 +1083,9 @@ function renderScore(runs, container) {
     new VF.Formatter().joinVoices([voice]).format([voice], measureWidth - 62);
     voice.draw(ctx, stave);
     beams.forEach((b) => b.setContext(ctx).draw());
+    // Brackets and the 3 are drawn last: a tuplet is positioned from where
+    // its notes and their beams ended up, not from where they were asked for.
+    tuplets.forEach((t) => t.setContext(ctx).draw());
   }
 
   // Ties are drawn after every measure is formatted, since a tie reads the
@@ -884,6 +1119,7 @@ function renderScore(runs, container) {
     numMeasures,
     noteCount: units.filter((u) => u.note !== REST).length,
     clef: clef.label,
+    hasTriplets: model.hasTriplets,
   };
 }
 
@@ -905,20 +1141,20 @@ const METRONOME_LOOKAHEAD = 0.15; // seconds of click track booked ahead
 const METRONOME_TICK_MS = 40;     // scheduler wake-up interval
 const BEATS_PER_BAR = 4;          // the engraver is 4/4 throughout
 
+function createNoiseBuffer(ctx, seconds) {
+  const length = Math.max(1, Math.ceil(ctx.sampleRate * seconds));
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
+}
+
 class Metronome {
   constructor(audioCtx, bpm) {
     this.ctx = audioCtx;
     this.beatDur = 60 / bpm;
-    this.noise = Metronome._noiseBuffer(audioCtx);
+    this.noise = createNoiseBuffer(audioCtx, 0.1);
     this.timer = null;
-  }
-
-  static _noiseBuffer(ctx, seconds = 0.1) {
-    const length = Math.ceil(ctx.sampleRate * seconds);
-    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
-    return buffer;
   }
 
   start(startTime) {
@@ -963,6 +1199,329 @@ class Metronome {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   INSTRUMENTS
+   Every voice is synthesised from oscillators and noise. Not a
+   stylistic choice — the bundle has to run with no network at
+   all, and a sampled instrument worth listening to is megabytes
+   of audio that would have to be embedded in the page.
+
+   So each one is built from the part of its physics that the
+   ear actually uses to name it: a struck string's partials
+   decaying at different rates, a plucked string's travelling
+   wave, a reed's formants. Cheap models, but recognisable, and
+   the whole set costs nothing to ship.
+══════════════════════════════════════════════════════════ */
+
+// Exponential ramps cannot touch zero, so silence is this instead.
+const SILENT = 0.0001;
+
+/* A cheap plucked string. Karplus-Strong: fill a delay line one period long
+   with noise, then read it round and round, averaging neighbouring samples
+   each time round. The averaging is a lowpass, so the high partials die
+   first and what is left settles into the pitch — which is what a plucked
+   string does. It is rendered into a buffer rather than built from nodes
+   because a Web Audio feedback loop is quantised to a 128-sample block,
+   putting a floor of about 344Hz on the pitch it can express. */
+function renderPluckedString(ctx, freq, seconds, damping) {
+  const rate = ctx.sampleRate;
+  const total = Math.max(2, Math.ceil(seconds * rate));
+  const period = Math.max(2, Math.round(rate / freq));
+  const buffer = ctx.createBuffer(1, total, rate);
+  const y = buffer.getChannelData(0);
+
+  // The excitation is lowpassed noise: raw noise is a click, and a pick is
+  // not a click.
+  let smoothed = 0;
+  for (let i = 0; i < period && i < total; i++) {
+    smoothed = 0.6 * smoothed + 0.4 * (Math.random() * 2 - 1);
+    y[i] = smoothed;
+  }
+  for (let i = period; i < total; i++) {
+    const previous = i - period - 1 >= 0 ? y[i - period - 1] : y[i - period];
+    y[i] = damping * 0.5 * (y[i - period] + previous);
+  }
+  return buffer;
+}
+
+function playGuitar(ctx, out, freq, when, duration) {
+  // A plucked string cannot sustain, so a long note is a decaying one and
+  // rendering more than a few seconds of it is rendering silence.
+  const ring = Math.min(3.2, duration + 1.1);
+  const source = ctx.createBufferSource();
+  source.buffer = renderPluckedString(ctx, freq, ring, 0.9965);
+
+  // The damping has to finish inside the buffer. Scheduling a release past
+  // the end of the rendered string leaves the envelope holding a note that
+  // stopped sounding — silence either way, but silence the envelope thinks
+  // is still ringing, and any later change to the tail would be a no-op.
+  const held = Math.min(duration, Math.max(0.05, ring - 0.3));
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.5, when);
+  gain.gain.setValueAtTime(0.5, when + held);
+  gain.gain.exponentialRampToValueAtTime(SILENT, when + Math.min(ring, held + 0.28));
+
+  const body = ctx.createBiquadFilter();
+  body.type = 'peaking';
+  body.frequency.value = 220;   // the box resonance that makes it a guitar
+  body.Q.value = 1.1;
+  body.gain.value = 4;
+
+  source.connect(body);
+  body.connect(gain);
+  gain.connect(out);
+  source.start(when);
+  source.stop(when + ring + 0.05);
+}
+
+/* A struck string: partials that start together and decay at their own
+   rates, the upper ones first. That difference is most of what separates a
+   struck string from a held tone, and the slight sharpness of the upper
+   partials — real strings are stiff, so they are not exact multiples — is
+   most of what stops it sounding like an organ. */
+function playPiano(ctx, out, freq, when, duration) {
+  const damped = when + duration;
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0.42, when);
+  master.gain.setValueAtTime(0.42, damped);
+  master.gain.exponentialRampToValueAtTime(SILENT, damped + 0.14);
+  master.connect(out);
+
+  // Lower notes ring far longer than high ones.
+  const base = Math.max(0.45, 3.4 - Math.log2(Math.max(freq, 27.5) / 55) * 0.62);
+  const partials = [[1, 1, 1], [2, 0.30, 0.62], [3, 0.13, 0.44], [4, 0.07, 0.32], [6, 0.03, 0.22]];
+
+  for (const [multiple, level, decayScale] of partials) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * multiple * (1 + 0.0007 * multiple * multiple);
+
+    const decay = base * decayScale;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(SILENT, when);
+    gain.gain.exponentialRampToValueAtTime(level, when + 0.004);
+    gain.gain.exponentialRampToValueAtTime(SILENT, when + 0.004 + decay);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(when);
+    osc.stop(Math.min(when + 0.004 + decay, damped + 0.2) + 0.02);
+  }
+}
+
+/* Two detuned saws through a filter that closes as the note sounds — the
+   plainest subtractive voice there is, and the reference point the other
+   three are heard against. */
+function playSynth(ctx, out, freq, when, duration) {
+  const end = when + duration;
+  const gain = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.Q.value = 4;
+  filter.frequency.setValueAtTime(Math.min(11000, freq * 8), when);
+  filter.frequency.exponentialRampToValueAtTime(Math.min(11000, Math.max(220, freq * 2.2)), end + 0.05);
+
+  gain.gain.setValueAtTime(SILENT, when);
+  gain.gain.exponentialRampToValueAtTime(0.22, when + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.16, Math.max(when + 0.02, end));
+  gain.gain.exponentialRampToValueAtTime(SILENT, end + 0.07);
+
+  for (const detune of [-7, 7]) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = freq;
+    osc.detune.value = detune;
+    osc.connect(filter);
+    osc.start(when);
+    osc.stop(end + 0.1);
+  }
+
+  filter.connect(gain);
+  gain.connect(out);
+}
+
+/* A reed: a saw for the buzz, two fixed resonances for the nasal colour a
+   conical bore gives, a breath layer, and vibrato that arrives a moment
+   after the note does — which is how a player uses it, and most of why a
+   sustained synthetic tone reads as a person rather than a machine. */
+function playSax(ctx, out, freq, when, duration) {
+  const end = when + duration;
+
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.value = freq;
+
+  const vibrato = ctx.createOscillator();
+  vibrato.frequency.value = 5.1;
+  const vibratoDepth = ctx.createGain();
+  vibratoDepth.gain.setValueAtTime(0, when);
+  vibratoDepth.gain.linearRampToValueAtTime(7, when + Math.min(0.4, duration));
+  vibrato.connect(vibratoDepth);
+  vibratoDepth.connect(osc.detune);
+
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = Math.min(9000, freq * 7);
+  const formantOne = ctx.createBiquadFilter();
+  formantOne.type = 'peaking';
+  formantOne.frequency.value = 720;
+  formantOne.Q.value = 1.2;
+  formantOne.gain.value = 7;
+  const formantTwo = ctx.createBiquadFilter();
+  formantTwo.type = 'peaking';
+  formantTwo.frequency.value = 1800;
+  formantTwo.Q.value = 1.5;
+  formantTwo.gain.value = 8;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(SILENT, when);
+  gain.gain.exponentialRampToValueAtTime(0.24, when + Math.min(0.05, duration * 0.4));
+  gain.gain.exponentialRampToValueAtTime(0.21, Math.max(when + 0.06, end));
+  gain.gain.exponentialRampToValueAtTime(SILENT, end + 0.09);
+
+  osc.connect(tone);
+  tone.connect(formantOne);
+  formantOne.connect(formantTwo);
+  formantTwo.connect(gain);
+  gain.connect(out);
+
+  // Breath: quiet, but its absence is what makes a reed sound synthetic.
+  const breath = ctx.createBufferSource();
+  breath.buffer = createNoiseBuffer(ctx, Math.max(0.25, duration + 0.2));
+  const breathBand = ctx.createBiquadFilter();
+  breathBand.type = 'bandpass';
+  breathBand.frequency.value = 2400;
+  breathBand.Q.value = 0.8;
+  const breathGain = ctx.createGain();
+  breathGain.gain.setValueAtTime(SILENT, when);
+  breathGain.gain.exponentialRampToValueAtTime(0.02, when + 0.04);
+  breathGain.gain.exponentialRampToValueAtTime(SILENT, end + 0.06);
+  breath.connect(breathBand);
+  breathBand.connect(breathGain);
+  breathGain.connect(out);
+
+  osc.start(when);
+  vibrato.start(when);
+  breath.start(when);
+  osc.stop(end + 0.12);
+  vibrato.stop(end + 0.12);
+  breath.stop(end + 0.12);
+}
+
+const INSTRUMENTS = {
+  synth:  { label: 'Synth',      voice: playSynth },
+  piano:  { label: 'Piano',      voice: playPiano },
+  guitar: { label: 'Guitar',     voice: playGuitar },
+  sax:    { label: 'Saxophone',  voice: playSax },
+};
+
+const DEFAULT_INSTRUMENT = 'piano';
+
+/* ══════════════════════════════════════════════════════════
+   PLAYBACK
+   Plays the transcription — not the recording. The point is to
+   hear what was written down, so that a wrong note or a wrong
+   rhythm is audible as a wrong note rather than having to be
+   read off the staff. It therefore plays the quantized model
+   the score is drawn from, triplets and all.
+
+   Voices are booked a fraction of a second ahead on the audio
+   clock, like the metronome and for the same reason: a long
+   take would otherwise mean thousands of nodes created at once,
+   and setTimeout is not a musical instrument.
+══════════════════════════════════════════════════════════ */
+const PLAYBACK_LOOKAHEAD = 0.2;
+const PLAYBACK_TICK_MS = 40;
+const PLAYBACK_LEAD_IN = 0.12;
+
+// Notes are released a touch early so that two of the same pitch in a row
+// are heard as two notes rather than one long one.
+function buildPlaybackSchedule(runs, bpm) {
+  const unitSeconds = 60 / bpm / UNITS_PER_QUARTER;
+  const notes = [];
+  let at = 0;
+  for (const run of runs) {
+    const span = run.units * unitSeconds;
+    if (run.note !== REST) {
+      const freq = noteToFrequency(run.note);
+      if (freq) notes.push({ freq, start: at, duration: Math.max(0.05, span - Math.min(0.045, span * 0.12)) });
+    }
+    at += span;
+  }
+  return { notes, totalSeconds: at };
+}
+
+class Player {
+  constructor({ onStateChange } = {}) {
+    this.onStateChange = onStateChange;
+    this.ctx = null;
+    this.timer = null;
+    this.playing = false;
+  }
+
+  async play(runs, bpm, instrumentKey) {
+    this.stop();
+    const instrument = INSTRUMENTS[instrumentKey] || INSTRUMENTS[DEFAULT_INSTRUMENT];
+    const { notes, totalSeconds } = buildPlaybackSchedule(runs, bpm);
+    if (!notes.length) return false;
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AudioCtx();
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.85;
+    this.master.connect(this.ctx.destination);
+
+    this.notes = notes;
+    this.index = 0;
+    this.instrument = instrument;
+    this.startedAt = this.ctx.currentTime + PLAYBACK_LEAD_IN;
+    this.endsAt = this.startedAt + totalSeconds + 0.5;
+    this.playing = true;
+    this.onStateChange?.(true);
+
+    this._pump();
+    this.timer = setInterval(() => this._pump(), PLAYBACK_TICK_MS);
+    return true;
+  }
+
+  _pump() {
+    if (!this.playing || !this.ctx) return;
+    const horizon = this.ctx.currentTime + PLAYBACK_LOOKAHEAD;
+    while (this.index < this.notes.length && this.startedAt + this.notes[this.index].start < horizon) {
+      const note = this.notes[this.index++];
+      this.instrument.voice(this.ctx, this.master, note.freq, this.startedAt + note.start, note.duration);
+    }
+    if (this.index >= this.notes.length && this.ctx.currentTime >= this.endsAt) this.stop();
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+
+    if (this.ctx) {
+      const ctx = this.ctx;
+      const master = this.master;
+      this.ctx = null;
+      this.master = null;
+      // Fade before closing. Closing a context on top of sounding voices
+      // cuts them mid-cycle, which clicks.
+      try {
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
+        master.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.06);
+      } catch (err) { /* the context may already be closing */ }
+      setTimeout(() => { ctx.close().catch(() => {}); }, 140);
+    }
+
+    if (this.playing) {
+      this.playing = false;
+      this.onStateChange?.(false);
+    }
   }
 }
 
@@ -1103,6 +1662,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const scoreContainer = $('#scoreContainer');
   const exportBtn   = $('#exportBtn');
   const clearBtn    = $('#clearBtn');
+  const playBtn     = $('#playBtn');
+  const playLabel   = $('#playLabel');
+  const voiceSelect = $('#voiceSelect');
   const metronomeToggle = $('#metronomeToggle');
   const metronomeState  = $('#metronomeState');
   const toast       = $('#toast');
@@ -1173,6 +1735,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     bpmInput.value = clampBpm(bpmInput.value);
+    // The mic is about to open; anything still sounding would be recorded.
+    player.stop();
 
     try {
       recorder = new Recorder({
@@ -1244,8 +1808,15 @@ document.addEventListener('DOMContentLoaded', () => {
       scoreContainer.hidden = false;
       const info = renderScore(runs, scoreContainer);
 
-      scoreMeta.textContent =
-        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'} · ${info.noteCount} events · ${info.clef} · ${bpm} bpm · ${lastResult.seconds.toFixed(1)}s`;
+      const parts = [
+        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'}`,
+        `${info.noteCount} events`,
+      ];
+      if (info.hasTriplets) parts.push('triplets');
+      parts.push(info.clef, `${bpm} bpm`, `${lastResult.seconds.toFixed(1)}s`);
+      scoreMeta.textContent = parts.join(' · ');
+
+      setPlaybackEnabled(true);
       exportBtn.disabled = false;
       clearBtn.disabled = false;
     } catch (err) {
@@ -1253,6 +1824,7 @@ document.addEventListener('DOMContentLoaded', () => {
       lastResult = null;
       scoreContainer.hidden = true;
       scoreEmpty.hidden = false;
+      setPlaybackEnabled(false);
       exportBtn.disabled = true;
       clearBtn.disabled = true;
       showToast('Something went wrong transcribing that take. Try again.', 'error');
@@ -1260,6 +1832,47 @@ document.addEventListener('DOMContentLoaded', () => {
       metaState.textContent = 'IDLE';
     }
   }
+
+  /* ── Playback ── */
+  const player = new Player({
+    onStateChange: (playing) => {
+      playBtn.classList.toggle('is-playing', playing);
+      playLabel.textContent = playing ? 'Stop' : 'Play';
+      playBtn.setAttribute('aria-label', playing ? 'Stop playback' : 'Play the transcription');
+    },
+  });
+
+  function setPlaybackEnabled(enabled) {
+    playBtn.disabled = !enabled;
+    voiceSelect.disabled = !enabled;
+    if (!enabled) player.stop();
+  }
+
+  playBtn.addEventListener('click', async () => {
+    if (player.playing) { player.stop(); return; }
+    if (!lastResult) return;
+
+    // Play what was written down, not what was recorded: the model the score
+    // is drawn from, so anything mis-transcribed is audible as such.
+    const model = modelFromRuns(lastResult.runs);
+    if (!model) { showToast('Nothing to play in that take.', 'error'); return; }
+
+    try {
+      await player.play(model.runs, lastResult.bpm, voiceSelect.value);
+    } catch (err) {
+      console.error('Playback failed:', err);
+      player.stop();
+      showToast('Could not start playback.', 'error');
+    }
+  });
+
+  // Switching voice mid-phrase restarts on the new one rather than finishing
+  // the phrase on the old, which is what makes it useful for comparing them.
+  voiceSelect.addEventListener('change', async () => {
+    if (!player.playing || !lastResult) return;
+    const model = modelFromRuns(lastResult.runs);
+    if (model) await player.play(model.runs, lastResult.bpm, voiceSelect.value);
+  });
 
   exportBtn.addEventListener('click', async () => {
     if (!lastResult) return;
@@ -1286,6 +1899,7 @@ document.addEventListener('DOMContentLoaded', () => {
     scoreContainer.hidden = true;
     scoreEmpty.hidden = false;
     scoreMeta.textContent = '';
+    setPlaybackEnabled(false);
     exportBtn.disabled = true;
     clearBtn.disabled = true;
   });

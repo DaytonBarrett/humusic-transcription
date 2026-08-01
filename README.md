@@ -48,11 +48,20 @@ and is far less prone to the octave errors that spectral peak-picking produces.
 Note naming still follows the same equal-temperament formula as `main.cpp`
 (`69 + 12·log₂(f/440)`, A4 = 440 Hz), so both transcribers agree on every note.
 
-Rhythm is quantized against a sixteenth-note grid derived from the tempo, then
-consolidated into idiomatic durations — dotted values, ties across barlines —
-rather than being written out as a wall of sixteenths.
+Rhythm is quantized against a grid of **twelfths of a beat** derived from the
+tempo, then consolidated into idiomatic durations — dotted values, ties across
+barlines — rather than being written out as a wall of sixteenths. Twelve is the
+smallest division that divides cleanly by both four and three, so a sixteenth
+(3 units) and an eighth-note triplet (4 units) are both measured exactly. On a
+sixteenth grid a triplet cannot be represented at all — a third of a beat is
+1.33 sixteenths — so triplets used to come out as a limping 2+1.
 
-Pitch is measured once per sixteenth but *named* once per note, which is what
+Each beat is then read as straight or as a triplet on its own, from where the
+onsets inside it actually landed, and only when the triplet reading fits
+distinctly better. Straight rhythm is the default and stays that way: the two
+grids are never far apart, so the test has to be decided but conservative.
+
+Pitch is measured once per frame but *named* once per note, which is what
 keeps a held note whole. Every change of note name starts a new note, so a
 sustain that wobbles across a semitone boundary — an ordinary amount of
 vibrato on a note sung slightly sharp — would otherwise be written as a stream
@@ -60,9 +69,26 @@ of alternating sixteenths. The measurements are median-filtered, brief
 dropouts inside a sustain are bridged, and a note ends only when the pitch
 genuinely leaves where it has been sitting or a fresh attack arrives.
 
+### Playback
+
+The engraved line can be played back as a **piano, plucked guitar, saxophone or
+plain synth**. What sounds is the quantized model the score is drawn from — not
+the recording — so a mis-transcribed note is audible as a wrong note rather than
+having to be spotted on the staff.
+
+Every voice is synthesised from oscillators and noise at the moment it sounds.
+That is a constraint rather than a preference: the bundle has to run with no
+network, and a sampled instrument worth listening to would be megabytes of audio
+embedded in the page. So each one is built from the part of its physics the ear
+uses to name it — a struck string's partials decaying at different rates, a
+plucked string's travelling wave (Karplus–Strong, rendered into a buffer because
+a Web Audio feedback loop is quantised to 128 samples and so cannot go below
+about 344 Hz), a reed's formants and breath.
+
 **Limitations worth knowing:** the detector is monophonic, so chords will not
-transcribe correctly; everything is written in 4/4 and treble clef; and the
-tempo is taken from you rather than inferred from the audio.
+transcribe correctly; everything is written in 4/4; the tempo is taken from you
+rather than inferred from the audio; and triplet detection covers eighth-note
+triplets within a beat, not duplets, quintuplets or triplets spanning two beats.
 
 ## iOS
 
