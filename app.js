@@ -57,6 +57,17 @@ function noteToFrequency(noteName) {
   return midi === null ? null : 440 * Math.pow(2, (midi - 69) / 12);
 }
 
+// Where a note sits on the staff, counted in diatonic steps rather than
+// semitones. C#4 and C4 share a line — an accidental moves the pitch but not
+// the notehead — and it is lines, not semitones, that ledger lines are drawn
+// for, so staff geometry has to be reasoned about in this scale.
+const STAFF_STEPS = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+
+function noteToStaffStep(noteName) {
+  const m = /^([A-G])#?(-?\d+)$/.exec(noteName);
+  return m ? parseInt(m[2], 10) * 7 + STAFF_STEPS[m[1]] : null;
+}
+
 /* ══════════════════════════════════════════════════════════
    YIN PITCH DETECTOR
    De Cheveigné & Kawahara's autocorrelation-based estimator —
@@ -414,39 +425,68 @@ function analyzeRecording(samples, sampleRate, bpm) {
    CLEF SELECTION
    A fixed treble clef pushes a bass line or a low male voice
    far below the staff, where it reads as a thicket of ledger
-   lines. So the clef is chosen from the line itself: whichever
-   staff sits closest to the music puts the notes on the staff
-   and the ledger lines where they belong.
+   lines. So the clef is chosen from the line itself — but by
+   counting the ledger lines each staff would actually cost,
+   which is the thing a reader pays for, rather than by asking
+   which staff's centre line the median pitch sits nearer.
 
-   The reading is taken from the median pitch, not the mean —
-   a stray octave slip on one note shifts a mean enough to move
-   the whole staff, while the median ignores it. Each note
-   counts for its length, so a line is judged by where it
-   actually sits rather than by a flurry of passing notes.
+   Measuring from the centre lines is what put treble melodies
+   on a bass clef. Those centres are B4 and D3, so the midpoint
+   between them lands exactly on middle C, and any line whose
+   median sits at or below C4 tipped to bass — even a melody
+   running C4 up to A4, which is treble music by any reading.
+   Centre distance also ignores range entirely: it cannot tell
+   a line that sits on middle C from one that merely passes
+   through it on the way up.
 ══════════════════════════════════════════════════════════ */
 const CLEFS = {
-  // middleLine is the MIDI note sitting on the centre staff line:
-  // B4 for treble, D3 for bass. restKey places rests in the middle
-  // of that staff, which is where a copyist centres them.
-  treble: { vex: 'treble', label: 'treble', middleLine: 71, restKey: 'b/4', xmlSign: 'G', xmlLine: 2 },
-  bass:   { vex: 'bass',   label: 'bass',   middleLine: 50, restKey: 'd/3', xmlSign: 'F', xmlLine: 4 },
+  // bottomLine/topLine are the outer staff lines in diatonic steps — E4 and
+  // F5 for treble, G2 and A3 for bass. restKey places rests in the middle of
+  // that staff, which is where a copyist centres them.
+  treble: {
+    vex: 'treble', label: 'treble', restKey: 'b/4', xmlSign: 'G', xmlLine: 2,
+    bottomLine: noteToStaffStep('E4'), topLine: noteToStaffStep('F5'),
+  },
+  bass: {
+    vex: 'bass', label: 'bass', restKey: 'd/3', xmlSign: 'F', xmlLine: 4,
+    bottomLine: noteToStaffStep('G2'), topLine: noteToStaffStep('A3'),
+  },
 };
 
+// Ledger lines a note needs on a given staff. A note in the space beyond a
+// ledger line still needs that line drawn, which is why this floors the
+// half-steps rather than rounding them.
+function ledgerLines(step, clef) {
+  if (step > clef.topLine) return Math.floor((step - clef.topLine) / 2);
+  if (step < clef.bottomLine) return Math.floor((clef.bottomLine - step) / 2);
+  return 0;
+}
+
 function chooseClef(runs) {
-  const midis = [];
+  let trebleCost = 0;
+  let bassCost = 0;
+  let totalUnits = 0;
+
+  // Each note counts for its length, so a line is judged by where it
+  // actually sits rather than by a flurry of passing notes — and a one-16th
+  // octave slip cannot drag the whole staff with it.
   for (const run of runs) {
     if (run.note === REST) continue;
-    const midi = noteToMidi(run.note);
-    if (midi !== null) for (let i = 0; i < run.units; i++) midis.push(midi);
+    const step = noteToStaffStep(run.note);
+    if (step === null) continue;
+    trebleCost += ledgerLines(step, CLEFS.treble) * run.units;
+    bassCost += ledgerLines(step, CLEFS.bass) * run.units;
+    totalUnits += run.units;
   }
-  if (!midis.length) return CLEFS.treble;
+  if (!totalUnits) return CLEFS.treble;
 
-  const centre = median(midis);
-
-  // Ties go to treble: it's the commoner clef for a single melodic line.
-  return Math.abs(centre - CLEFS.treble.middleLine) <= Math.abs(centre - CLEFS.bass.middleLine)
-    ? CLEFS.treble
-    : CLEFS.bass;
+  // Treble is the default for a single melodic line, so bass has to earn the
+  // switch rather than win on a hair: it must save more than one ledger line
+  // per sixteenth on average. Around middle C the two staves are near enough
+  // to symmetric that a bare comparison flips on one ledger line, which is
+  // how a hummed B3 — a note most people would read in treble — ends up
+  // under a bass clef.
+  return trebleCost - bassCost > totalUnits ? CLEFS.bass : CLEFS.treble;
 }
 
 /* ══════════════════════════════════════════════════════════
