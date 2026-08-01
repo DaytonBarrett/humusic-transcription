@@ -82,7 +82,17 @@ function noteToStaffStep(noteName) {
    handling noise, and letting YIN dip into them is one way a
    held note picks up a stray sub-audible reading mid-sustain.
 ══════════════════════════════════════════════════════════ */
-function yinDetectPitch(buffer, sampleRate, threshold = 0.1, minFreq = MIN_PITCH_HZ, maxFreq = MAX_PITCH_HZ) {
+
+// How unlike itself a window may be and still count as pitched at all.
+// Clean tone sits near 0.05; noise and consonants run near 1.
+const MAX_APERIODICITY = 0.35;
+
+// How much worse than the best match anywhere a shorter lag may score and
+// still be taken as the real period. Additive rather than proportional: on a
+// clean tone the best score is near zero, and a percentage of nearly zero
+// would reject the true period for being a hair worse than its own multiple.
+const SUBHARMONIC_ALLOWANCE = 0.06;
+function yinDetectPitch(buffer, sampleRate, minFreq = MIN_PITCH_HZ, maxFreq = MAX_PITCH_HZ) {
   const half = buffer.length >> 1;
   if (half < 32) return null;
 
@@ -107,16 +117,46 @@ function yinDetectPitch(buffer, sampleRate, threshold = 0.1, minFreq = MIN_PITCH
     yinBuffer[tau] = runningSum === 0 ? 1 : (sum * tau) / runningSum;
   }
 
-  // Step 3: absolute threshold — first dip below threshold that's a local min.
-  let tauEstimate = -1;
+  /* Step 3: the shortest lag that matches nearly as well as the best one
+     anywhere.
+
+     Both of the obvious rules are wrong, in opposite directions. Taking the
+     first dip under a fixed threshold — the textbook step — fails on anything
+     breathy or wobbly: the dip at the true period never gets under the
+     threshold, the scan runs on into long lags, and whatever it finds down
+     there becomes the answer, an octave or more too low. Taking the deepest
+     dip instead fails on clean tones: a waveform that repeats every T repeats
+     just as exactly every 2T, 3T, 7T, and the normalisation drifts downwards
+     with lag, so the very deepest dip is routinely a high multiple of the
+     period — which is how a clean C5 gets reported as a D2.
+
+     What is actually wanted is the *shortest* period that explains the
+     waveform, with "explains" judged against how well the signal matches
+     itself at all — the best score found anywhere sets the standard, and the
+     first dip that comes within a small margin of it wins. On a clean tone
+     that margin is tight, so only a true period qualifies; on a breathy one
+     the whole curve is raised and the margin rises with it. */
+  let bestValue = Infinity;
+  let deepestTau = minTau;
   for (let tau = minTau; tau <= maxTau; tau++) {
-    if (yinBuffer[tau] < threshold) {
-      while (tau + 1 <= maxTau && yinBuffer[tau + 1] < yinBuffer[tau]) tau++;
-      tauEstimate = tau;
-      break;
-    }
+    if (yinBuffer[tau] < bestValue) { bestValue = yinBuffer[tau]; deepestTau = tau; }
   }
-  if (tauEstimate === -1) return null;
+  if (bestValue > MAX_APERIODICITY) return null;
+
+  const ceiling = bestValue + SUBHARMONIC_ALLOWANCE;
+  let tauEstimate = -1;
+  for (let tau = minTau + 1; tau < maxTau; tau++) {
+    if (yinBuffer[tau] > ceiling) continue;
+    if (yinBuffer[tau] > yinBuffer[tau - 1] || yinBuffer[tau] > yinBuffer[tau + 1]) continue;
+    // Settle to the bottom of this dip rather than its leading edge.
+    let settled = tau;
+    while (settled + 1 <= maxTau && yinBuffer[settled + 1] < yinBuffer[settled]) settled++;
+    tauEstimate = settled;
+    break;
+  }
+  // Only when the best match sits right at the edge of the search range,
+  // where there is no dip to find.
+  if (tauEstimate === -1) tauEstimate = deepestTau;
 
   // Step 4: parabolic interpolation around the minimum for sub-sample precision.
   const x0 = tauEstimate < 1 ? tauEstimate : tauEstimate - 1;
@@ -161,7 +201,6 @@ function rms(buffer, start = 0, end = buffer.length) {
    name per 16th. Naming happens later, per note, once the
    measurements have been grouped.
 ══════════════════════════════════════════════════════════ */
-const YIN_THRESHOLD = 0.1;
 
 // Voicing. The floor is absolute — a quiet room never reaches it — but the
 // working threshold also scales with the take, so a soft recording is not
@@ -174,57 +213,128 @@ const SILENCE_RMS = 0.015;
 const VOICED_PEAK_RATIO = 0.06;
 const RELEASE_RATIO = 0.45;
 
-// E1 sits below a bass guitar's low string and C7 above a soprano's top, so
+// C2 sits below a bass singer's lowest note and C7 above a soprano's top, so
 // a reading outside this range is a detection error rather than a melody.
-const MIN_PITCH_MIDI = 28;
+// The floor matters more than it looks: almost every way a pitch tracker
+// fails produces a reading that is too low, never too high, so the narrower
+// the floor the fewer of those failures survive to be written down.
+const MIN_PITCH_MIDI = 36;
 const MAX_PITCH_MIDI = 96;
 const MIN_PITCH_HZ = 440 * Math.pow(2, (MIN_PITCH_MIDI - 69) / 12);
 const MAX_PITCH_HZ = 440 * Math.pow(2, (MAX_PITCH_MIDI - 69) / 12);
 
-// 46ms holds two periods of the lowest note we accept; past ~93ms the window
-// starts crossing note boundaries at ordinary tempos without buying accuracy.
-const MIN_ANALYSIS_SECONDS = 0.046;
-const MAX_ANALYSIS_SECONDS = 0.093;
+/* The pitch window is a fixed length, deliberately not tied to the note grid.
+   It used to be "the frame, widened to at least 46ms", which was 93ms while a
+   frame was a sixteenth — and then silently halved to 46ms when the grid moved
+   to twelfths of a beat for triplets. That halving is what started the octave
+   errors: at 46ms the difference function spans barely two periods of a low
+   note, the dip at the true period is too shallow to be picked out, and the
+   search runs on into long lags where the cumulative-mean normalisation is
+   biased downwards — reporting a period several times too long, which is a
+   note an octave or two below the one that was sung.
 
-/* One entry per 16th. `midi` is a float — or null where nothing pitched was
-   found — and `strong`/`audible` are the two sides of the voicing hysteresis:
-   `strong` is loud enough to begin a note, `audible` only loud enough to keep
-   one going. `filled` marks a frame bridged across a dropout rather than
-   measured, which the onset test has to know about. */
-function measureFrames(samples, sampleRate, segmentSamples) {
-  const numSegments = Math.floor(samples.length / segmentSamples);
-  const frames = new Array(numSegments);
+   90ms is long enough to hold several periods of anything in range. Note
+   boundaries are not read from this window at all: they come from the onset
+   detector below, which runs at its own much finer resolution. */
+const PITCH_WINDOW_SECONDS = 0.09;
+
+/* Pitch detection does not need 44kHz. Melody fundamentals stop below 2.1kHz,
+   so the signal is decimated to about 22kHz first. YIN costs the square of
+   the window in samples, so halving the rate quarters the work — which is
+   what pays for the longer, more reliable window. A low-pass has to precede
+   the decimation anyway, and it helps: stripping the top octaves leaves the
+   difference function a cleaner waveform to match against itself. */
+const PITCH_RATE_TARGET = 22050;
+
+// Rumble, handling noise and mains hum all live below the lowest note we
+// accept, and all of it is periodic enough for a pitch tracker to bite on.
+const RUMBLE_CUTOFF_HZ = 50;
+
+function prepareSignal(samples, sampleRate) {
+  /* High pass, in two passes. One pole rolls off at 6dB per octave, which
+     over the octave between rumble and the lowest note we accept is barely
+     3dB — nothing. Cascading two doubles that slope, so handling noise and
+     mains hum are pushed well down while C2 loses only a few dB. It matters
+     because rumble is steady while a held note decays: leave it in, and the
+     tail of a long note ends up quieter than the noise under it, at which
+     point the note is judged to have stopped and the score gets a rest that
+     nobody played. */
+  const dt = 1 / sampleRate;
+  const rc = 1 / (2 * Math.PI * RUMBLE_CUTOFF_HZ);
+  const alpha = rc / (rc + dt);
+  const cleaned = new Float32Array(samples.length);
+  for (let pass = 0; pass < 2; pass++) {
+    const source = pass === 0 ? samples : cleaned;
+    let previousIn = 0;
+    let previousOut = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const x = source[i];
+      previousOut = alpha * (previousOut + x - previousIn);
+      previousIn = x;
+      cleaned[i] = previousOut;
+    }
+  }
+
+  const factor = Math.max(1, Math.round(sampleRate / PITCH_RATE_TARGET));
+  if (factor === 1) return { data: cleaned, rate: sampleRate };
+
+  // Triangular-weighted average across the decimation span: a cheap low-pass
+  // whose stop band sits where the new Nyquist will be, so nothing folds back.
+  const length = Math.floor(cleaned.length / factor);
+  const data = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    const centre = i * factor;
+    let sum = 0;
+    let weight = 0;
+    for (let k = -factor; k <= factor; k++) {
+      const index = centre + k;
+      if (index < 0 || index >= cleaned.length) continue;
+      const w = factor + 1 - Math.abs(k);
+      sum += cleaned[index] * w;
+      weight += w;
+    }
+    data[i] = weight ? sum / weight : 0;
+  }
+  return { data, rate: sampleRate / factor };
+}
+
+/* One entry per grid frame. `midi` is a float — or null where nothing pitched
+   was found — and `strong`/`audible` are the two sides of the voicing
+   hysteresis: `strong` is loud enough to begin a note, `audible` only loud
+   enough to keep one going. `filled` marks a frame bridged across a dropout
+   rather than measured. */
+function measureFrames(signal, framesPerSecond) {
+  const { data, rate } = signal;
+  const frameSamples = Math.max(1, Math.round(rate / framesPerSecond));
+  const count = Math.floor(data.length / frameSamples);
+  const frames = new Array(count);
 
   let peak = 0;
-  for (let i = 0; i < numSegments; i++) {
-    const energy = rms(samples, i * segmentSamples, (i + 1) * segmentSamples);
+  for (let i = 0; i < count; i++) {
+    const energy = rms(data, i * frameSamples, (i + 1) * frameSamples);
     if (energy > peak) peak = energy;
     frames[i] = { energy, midi: null, voiced: false, filled: false, audible: false, strong: false };
   }
 
   const onThreshold = Math.max(SILENCE_RMS, peak * VOICED_PEAK_RATIO);
   const offThreshold = onThreshold * RELEASE_RATIO;
+  const window = Math.round(rate * PITCH_WINDOW_SECONDS);
 
-  const analysisWindow = Math.min(
-    Math.round(sampleRate * MAX_ANALYSIS_SECONDS),
-    Math.max(segmentSamples, Math.round(sampleRate * MIN_ANALYSIS_SECONDS)),
-  );
-
-  for (let i = 0; i < numSegments; i++) {
+  for (let i = 0; i < count; i++) {
     // Below the release threshold nothing can be voiced however it sounds,
     // so there is no reason to pay for YIN over silence.
     if (frames[i].energy < offThreshold) continue;
     frames[i].audible = true;
     frames[i].strong = frames[i].energy >= onThreshold;
 
-    const center = i * segmentSamples + segmentSamples / 2;
-    let winStart = Math.round(center - analysisWindow / 2);
-    let winEnd = winStart + analysisWindow;
-    if (winStart < 0) { winEnd -= winStart; winStart = 0; }
-    if (winEnd > samples.length) { winStart -= winEnd - samples.length; winEnd = samples.length; }
-    winStart = Math.max(0, winStart);
+    const centre = i * frameSamples + frameSamples / 2;
+    let start = Math.round(centre - window / 2);
+    let end = start + window;
+    if (start < 0) { end -= start; start = 0; }
+    if (end > data.length) { start -= end - data.length; end = data.length; }
+    start = Math.max(0, start);
 
-    const result = yinDetectPitch(samples.subarray(winStart, winEnd), sampleRate, YIN_THRESHOLD);
+    const result = yinDetectPitch(data.subarray(start, end), rate);
     const midi = result ? frequencyToMidi(result.frequency) : null;
     if (midi !== null && midi >= MIN_PITCH_MIDI && midi <= MAX_PITCH_MIDI) frames[i].midi = midi;
   }
@@ -239,34 +349,135 @@ function measureFrames(samples, sampleRate, segmentSamples) {
 }
 
 /* ══════════════════════════════════════════════════════════
+   ONSETS
+   Where notes actually begin, measured on its own fine hop
+   rather than read off the note grid.
+
+   Rhythm is only ever as accurate as the moment a note is
+   judged to start, and the pitch window cannot supply that: it
+   is 90ms long, so around a note change it sees both notes at
+   once and the change appears wherever the mixture happens to
+   tip. That is a whole grid frame of error at ordinary tempos —
+   a third of a sixteenth — and it lands as a note written on
+   the wrong part of the beat.
+
+   Energy has no such problem. A struck or tongued or sung
+   attack is a step change in level, locatable to a few
+   milliseconds, so onsets are found there and the note
+   boundaries are pulled onto them.
+══════════════════════════════════════════════════════════ */
+const ONSET_HOP_SECONDS = 0.004;
+const ONSET_WINDOW_SECONDS = 0.02;
+/* An attack has to stand out from the quietest moment just before it by this
+   much, in nepers of level — a bit more than doubling.
+
+   Size alone cannot say what a rise is. Measured across a range of attacks
+   and of breath dips deep enough to matter, the two overlap completely —
+   re-articulations rising by 0.4 to 0.8, dips inside a single held note by
+   0.3 to 0.8 — so no threshold on loudness separates them, and picking one
+   only chooses which mistake to make. What separates them is shape, which
+   ONSET_SETTLE_SECONDS below tests. This threshold is left low, as a cheap
+   first filter on anything that is not a rise at all.
+
+   Measured against the recent trough rather than the previous hop, and that
+   is the whole trick. A level window has to be long enough to be a stable
+   measure of level, which makes it far longer than the hop between windows,
+   so consecutive windows overlap and a sharp attack is spread across several
+   of them. Hop to hop, even a hard-tongued note rises by only a fraction of
+   what it really rises by — measure it that way and no threshold separates a
+   genuine attack from ordinary wobble. Against the trough, the whole rise is
+   in one number. */
+const ONSET_RISE = 0.3;
+const ONSET_LOOKBACK_SECONDS = 0.03;
+
+/* An attack is a step; a swell is a ramp. That is the difference the level
+   alone cannot show, and it is visible a moment afterwards: a struck or
+   tongued note has fully arrived within a few tens of milliseconds and is
+   already decaying, while a note swelling back out of a dip is still on its
+   way up. So a rise only counts as an attack if it has finished rising. */
+const ONSET_SETTLE_SECONDS = 0.04;
+const ONSET_STILL_CLIMBING = 1.15;
+// Two attacks closer together than this are one attack seen twice.
+const MIN_ONSET_GAP_SECONDS = 0.05;
+
+function detectOnsets(signal) {
+  const { data, rate } = signal;
+  const hop = Math.max(1, Math.round(rate * ONSET_HOP_SECONDS));
+  const window = Math.max(hop, Math.round(rate * ONSET_WINDOW_SECONDS));
+  const count = Math.floor((data.length - window) / hop);
+  if (count < 4) return [];
+
+  const level = new Float32Array(count);
+  for (let i = 0; i < count; i++) level[i] = rms(data, i * hop, i * hop + window);
+
+  let loudest = 0;
+  for (let i = 0; i < count; i++) loudest = Math.max(loudest, level[i]);
+  if (loudest <= 0) return [];
+  const floor = Math.max(SILENCE_RMS, loudest * VOICED_PEAK_RATIO) * RELEASE_RATIO;
+
+  const lookback = Math.max(2, Math.round(ONSET_LOOKBACK_SECONDS / ONSET_HOP_SECONDS));
+  const minGap = Math.max(1, Math.round(MIN_ONSET_GAP_SECONDS / ONSET_HOP_SECONDS));
+  const settle = Math.max(1, Math.round(ONSET_SETTLE_SECONDS / ONSET_HOP_SECONDS));
+
+  const onsets = [];
+  let lastIndex = -minGap;
+  for (let i = lookback; i < count; i++) {
+    if (level[i] < floor || i - lastIndex < minGap) continue;
+
+    let trough = i - lookback;
+    for (let k = i - lookback; k < i; k++) if (level[k] < level[trough]) trough = k;
+    if (Math.log(level[i] + 1e-9) - Math.log(level[trough] + 1e-9) < ONSET_RISE) continue;
+
+    // Still climbing a moment later? Then this is a swell, not an attack.
+    if (level[Math.min(count - 1, i + settle)] > level[i] * ONSET_STILL_CLIMBING) continue;
+
+    // Booked at the trough: that is the moment the sound turned round, and
+    // the moment a listener would call the start of the note.
+    onsets.push((trough * hop + window / 2) / rate);
+    lastIndex = i;
+  }
+  return onsets;
+}
+
+/* ══════════════════════════════════════════════════════════
    NOTE TRACKING
    Groups the per-frame measurements into notes. This is the step
    that decides rhythm: every group boundary is a new note, so
    anything that fragments a group writes a held note out as a
    run of short ones.
 
-   Three defences, in order — a median filter for single-frame
-   slips, gap filling for momentary dropouts, and a pitch
-   reference with hysteresis so a note is only ended by a real
-   move away from where it has been sitting, not by the wobble
-   of a voice sustaining across a semitone boundary.
+   Four defences, in order — a median filter for single-frame
+   slips, gap filling for momentary dropouts, a pitch reference
+   with hysteresis, and a probationary period before any change
+   of note is believed.
 ══════════════════════════════════════════════════════════ */
-
-// A note struck again at the same pitch has no pitch change to find it by,
-// so it has to be found by its attack. At this grid an attack and a swell
-// out of a dip look much alike in energy alone, so the test is deliberately
-// narrow: the sound must have all but stopped — down where only the release
-// hysteresis was still holding the note open — and then come back loud. That
-// misses a re-articulation played legato over a still-sounding note, which
-// writes two notes as one held note. The opposite mistake is the one worth
-// avoiding: reading every swell as an attack shatters held notes, which is
-// exactly the failure this tracker exists to prevent.
-const ONSET_RISE_RATIO = 2.5;
 
 // How far the pitch must move from where the note has been sitting before
 // it counts as a different note. Comfortably wider than vibrato (±50 cents
 // is a wide operatic wobble) and comfortably inside a semitone.
 const NEW_NOTE_SEMITONES = 0.7;
+
+/* A change of pitch is put on probation rather than acted on. It has to hold
+   for this long, and hold at a consistent new pitch, before the note is
+   ended; if the reading comes back to where it was first, those frames are
+   folded into the sustain as though nothing had happened.
+
+   This is the difference between measuring and listening. A voice holding a
+   note throws off a wrong reading now and then — the window catches a
+   consonant, the vibrato reaches its extreme, the tracker slips — and each
+   one, taken at face value, ends the note and starts another. A person
+   hearing the same thing does not hear three notes; they hear one note and a
+   moment of noise. Sixty milliseconds is short enough that every real note
+   survives it — a sixteenth at 240bpm is still longer — and long enough that
+   a slip of a frame or two never becomes a note of its own. */
+const MIN_NOTE_SECONDS = 0.06;
+
+// No change of note is ever believed on the strength of a single frame.
+const MIN_PROBATION_FRAMES = 2;
+
+
+// How far a boundary may be moved to land on a detected attack.
+const ONSET_SNAP_FRAMES = 1.6;
 
 // A stretch this long with sound but no measurable pitch is unpitched
 // material in its own right, not a dropout to be papered over. It is a
@@ -326,74 +537,183 @@ function fillDropouts(frames, maxFillFrames) {
 
     const before = frames[i - 1];
     const after = frames[end];
-    if (audible && end - i <= maxFillFrames && before.voiced && after?.voiced
-        && Math.abs(before.midi - after.midi) < NEW_NOTE_SEMITONES) {
+    if (audible && end - i <= maxFillFrames && before.voiced && after?.voiced) {
+      // Same pitch either side: the note went on and the reading dropped out.
+      // Different pitches either side: the note changed, and the window —
+      // being far longer than a frame — saw both at once and resolved
+      // neither. Either way the sound never stopped, so neither is a rest.
+      // The changed case is handed to the note that follows, and left
+      // unmarked so a detected attack inside it still counts.
+      const sustained = Math.abs(before.midi - after.midi) < NEW_NOTE_SEMITONES;
       for (let k = i; k < end; k++) {
         frames[k].voiced = true;
-        frames[k].filled = true;
-        frames[k].midi = (before.midi + after.midi) / 2;
+        frames[k].filled = sustained;
+        frames[k].midi = sustained ? (before.midi + after.midi) / 2 : after.midi;
       }
     }
     i = end - 1;
   }
 }
 
-function trackNotes(frames) {
-  const runs = [];
-  let pitches = null; // MIDI floats of the note being tracked
-  let units = 0;
-  let startedByOnset = false;
+function trackNotes(frames, frameDur, onsetTimes) {
+  // Probation lasts at least a sixteenth of the grid, whatever the tempo.
+  // The shortest note the score can express is a sixteenth, so an excursion
+  // shorter than one cannot be a note however convinced the reading is —
+  // there would be no way to write it down even if it were real.
+  const sixteenthFrames = UNITS_PER_QUARTER / 4;
+  const confirmFrames = Math.max(sixteenthFrames, Math.round(MIN_NOTE_SECONDS / frameDur));
+  const onsetFrames = onsetTimes.map((time) => time / frameDur);
+  const attackFrames = new Set(onsetFrames.map((frame) => Math.round(frame)));
 
-  const flush = () => {
-    if (!pitches) return;
-    // The note is named once, from the middle of everything measured across
-    // it — so a note that drifts or wobbles over a boundary still resolves
-    // to the single pitch it was heard as, rather than to whichever side of
-    // the boundary each individual 16th happened to land on.
-    runs.push({ note: midiToNoteName(centrePitch(pitches)), units, startedByOnset });
-    pitches = null;
+  const pitchesIn = (from, to) => {
+    const out = [];
+    for (let i = from; i < to; i++) {
+      if (frames[i].voiced && frames[i].midi !== null) out.push(frames[i].midi);
+    }
+    return out;
+  };
+
+  // Pull a boundary onto a detected attack when one is close by. The pitch
+  // window is wider than a frame, so a change of note is measured a frame or
+  // so late; the attack is where it really happened.
+  const snapToOnset = (frame) => {
+    let best = frame;
+    let closest = ONSET_SNAP_FRAMES;
+    for (const onset of onsetFrames) {
+      const distance = Math.abs(onset - frame);
+      if (distance <= closest) { closest = distance; best = Math.round(onset); }
+    }
+    return best;
+  };
+
+  const segments = [];
+  let start = null;
+  let startedByAttack = false;
+  let probationStart = null;
+
+  const close = (end) => {
+    if (start !== null && end > start) segments.push({ start, end, byAttack: startedByAttack });
+    start = null;
   };
 
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i];
 
-    if (!frame.voiced) {
-      flush();
-      const last = runs[runs.length - 1];
-      if (last && last.note === REST) last.units++;
-      else runs.push({ note: REST, units: 1, startedByOnset: false });
+    if (!frame.voiced) { close(i); probationStart = null; continue; }
+
+    if (start === null) {
+      start = i;
+      startedByAttack = attackFrames.has(i);
+      probationStart = null;
       continue;
     }
 
-    const previous = frames[i - 1];
-    // A filled gap is a dip by definition, so the recovery out of one always
-    // looks like an attack. Exempt it, or every bridged dropout re-splits
-    // the note the bridge just repaired.
-    const onset = !!previous && previous.voiced && !previous.filled
-      && !previous.strong && frame.strong
-      && frame.energy > previous.energy * ONSET_RISE_RATIO;
-
-    let boundary = onset || pitches === null;
-    if (!boundary && Math.abs(frame.midi - centrePitch(pitches)) >= NEW_NOTE_SEMITONES) {
-      // One frame away from the reference is a slip; two in a row is a new
-      // note. Only ask for that confirmation while there is a voiced frame
-      // left to ask — at the end of a phrase there is nothing to confirm with.
-      const next = frames[i + 1];
-      boundary = !next || !next.voiced
-        || Math.abs(next.midi - centrePitch(pitches)) >= NEW_NOTE_SEMITONES;
+    /* A fresh attack ends the note whatever the pitch is doing — the only
+       way two notes at the same pitch stay two notes.
+       What keeps this from splitting sustains is the onset detector itself,
+       and specifically that it measures a rise against the level 30ms
+       earlier. Re-articulating a pitch means stopping it and starting it
+       again, so the whole rise happens inside those 30ms and shows up in
+       full. A breath catch, a swell or a bow change inside a held note
+       recovers over a tenth of a second or more, so at any moment only a
+       fraction of the rise is inside the window and it never reaches the
+       threshold. Sharpness is what separates them, not depth. */
+    if (attackFrames.has(i) && !frame.filled) {
+      close(i);
+      start = i;
+      startedByAttack = true;
+      probationStart = null;
+      continue;
     }
 
-    if (boundary) {
-      flush();
-      pitches = [];
-      units = 0;
-      startedByOnset = onset;
+    const settled = pitchesIn(start, probationStart === null ? i : probationStart);
+    const reference = settled.length ? centrePitch(settled) : frame.midi;
+
+    if (Math.abs(frame.midi - reference) < NEW_NOTE_SEMITONES) {
+      // Back where it was. Anything on probation was a slip in the reading,
+      // not a note — it belongs to the sustain, and nothing is written down
+      // about it.
+      probationStart = null;
+      continue;
     }
-    pitches.push(frame.midi);
-    units++;
+
+    if (probationStart === null) {
+      probationStart = i;
+    } else {
+      // Still away, but away somewhere else — it is wandering, not settling
+      // on a new note, so the probation restarts from here.
+      const wandering = pitchesIn(probationStart, i);
+      if (wandering.length && Math.abs(frame.midi - centrePitch(wandering)) >= NEW_NOTE_SEMITONES) {
+        probationStart = i;
+      }
+    }
+
+    /* Commit when the excursion has lasted long enough to be a note — or
+       sooner, once it is clear it is not coming back. Waiting the full
+       sixteenth every time swallows real sixteenths in a legato line, where
+       there is no attack to shortcut the wait and the long pitch window
+       leaves only two clean frames of a three-frame note. Asking whether the
+       pitch returns settles it: a slip goes back where it came from and is
+       absorbed, a note does not and is written down. */
+    const probation = i + 1 - probationStart;
+    const next = frames[i + 1];
+    const comesBack = !!next && next.voiced && next.midi !== null
+      && Math.abs(next.midi - reference) < NEW_NOTE_SEMITONES;
+
+    if (probation >= confirmFrames || (probation >= MIN_PROBATION_FRAMES && !comesBack)) {
+      const boundary = Math.min(i, Math.max(start + 1, snapToOnset(probationStart)));
+      close(boundary);
+      start = boundary;
+      startedByAttack = false;
+      probationStart = null;
+    }
+  }
+  close(frames.length);
+
+  /* A one-frame segment is not a note. It is the frame where the pitch window
+     lay across two notes and resolved neither, reading somewhere between
+     them — and left alone it is written down as a real note of its own, a
+     stray chromatic sixteenth wedged into every note change. It belongs to
+     the note arriving, since that is what it was turning into. */
+  const kept = [];
+  for (let s = 0; s < segments.length; s++) {
+    const segment = segments[s];
+    if (segment.end - segment.start >= MIN_PROBATION_FRAMES) { kept.push(segment); continue; }
+    const next = segments[s + 1];
+    const previous = kept[kept.length - 1];
+    if (next && next.start === segment.end) next.start = segment.start;
+    else if (previous && previous.end === segment.start) previous.end = segment.end;
+    else kept.push(segment);
   }
 
-  flush();
+  const runs = [];
+  const pushRest = (units) => {
+    const last = runs[runs.length - 1];
+    if (last && last.note === REST) last.units += units;
+    else if (units > 0) runs.push({ note: REST, units, startedByOnset: false });
+  };
+
+  let cursor = 0;
+  for (const segment of kept) {
+    pushRest(segment.start - cursor);
+    // The note is named once, from the middle of everything measured across
+    // it — so a note that drifts or wobbles still resolves to the single
+    // pitch it was heard as, rather than to whichever side of a boundary each
+    // individual frame happened to land on.
+    const pitches = pitchesIn(segment.start, segment.end);
+    if (pitches.length) {
+      runs.push({
+        note: midiToNoteName(centrePitch(pitches)),
+        units: segment.end - segment.start,
+        startedByOnset: segment.byAttack,
+      });
+    } else {
+      pushRest(segment.end - segment.start);
+    }
+    cursor = segment.end;
+  }
+  pushRest(frames.length - cursor);
+
   return runs;
 }
 
@@ -453,12 +773,16 @@ function nearestOffsetError(position, offsets) {
    notes at the same pitch are a distinction a flat array cannot carry. */
 function analyzeRecording(samples, sampleRate, bpm) {
   const frameDur = 60 / bpm / UNITS_PER_QUARTER;
-  const segmentSamples = Math.max(1, Math.round(frameDur * sampleRate));
 
-  const frames = measureFrames(samples, sampleRate, segmentSamples);
+  // Filtered and decimated once, then used for everything: the pitch windows,
+  // the level readings and the onsets all see the same signal.
+  const signal = prepareSignal(samples, sampleRate);
+
+  const frames = measureFrames(signal, 1 / frameDur);
   smoothPitch(frames);
   fillDropouts(frames, Math.max(1, Math.round(MAX_DROPOUT_SECONDS / frameDur)));
-  return mergeUnarticulatedRuns(trackNotes(frames));
+
+  return mergeUnarticulatedRuns(trackNotes(frames, frameDur, detectOnsets(signal)));
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1625,7 +1949,7 @@ class Recorder {
     this.onLevel?.(Math.min(1, level * 6));
 
     if (level > SILENCE_RMS) {
-      const result = yinDetectPitch(this.tunerBuffer, this.sampleRate, YIN_THRESHOLD);
+      const result = yinDetectPitch(this.tunerBuffer, this.sampleRate);
       this.onTuner?.(result ? { ...result, note: frequencyToNote(result.frequency) } : null);
     } else {
       this.onTuner?.(null);
