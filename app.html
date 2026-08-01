@@ -65,6 +65,16 @@
             </dd>
           </div>
           <div class="row">
+            <dt class="label">Metronome</dt>
+            <dd class="row__v">
+              <label class="toggle">
+                <input type="checkbox" id="metronomeToggle" checked />
+                <span class="toggle__track" aria-hidden="true"><span class="toggle__knob"></span></span>
+                <span class="toggle__text mono" id="metronomeState">On</span>
+              </label>
+            </dd>
+          </div>
+          <div class="row">
             <dt class="label">Detected</dt>
             <dd class="row__v row__v--big" id="pitchNote">—</dd>
           </div>
@@ -88,6 +98,8 @@
       <p class="col__note">
         Pitch is resolved with the YIN autocorrelation estimator, then
         quantized to a sixteenth-note grid derived from the tempo above.
+        The clef is chosen from the range you played. Use headphones with
+        the metronome on, or the click is recorded along with the line.
       </p>
     </section>
 

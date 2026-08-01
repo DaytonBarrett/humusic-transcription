@@ -226,6 +226,58 @@
 .bpm input:disabled { opacity: 0.45; }
 .bpm__unit { font-family: var(--mono); font-size: var(--fs-10); color: var(--ink-3); }
 
+/* Metronome switch — a panel toggle, squared off to match the rules */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle__track {
+  position: relative;
+  width: 32px;
+  height: 16px;
+  background: var(--paper-2);
+  border: var(--rule-hair);
+  transition: background 120ms linear, border-color 120ms linear;
+}
+.toggle__knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  background: var(--ink-3);
+  transition: transform 120ms ease, background 120ms linear;
+}
+.toggle input:checked + .toggle__track {
+  background: var(--blue-deep);
+  border-color: var(--blue-deep);
+}
+.toggle input:checked + .toggle__track .toggle__knob {
+  background: var(--paper);
+  transform: translateX(16px);
+}
+.toggle input:focus-visible + .toggle__track {
+  outline: 2px solid var(--blue-deep);
+  outline-offset: 2px;
+}
+.toggle__text {
+  font-size: var(--fs-10);
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+.toggle input:disabled ~ .toggle__track,
+.toggle input:disabled ~ .toggle__text { opacity: 0.45; }
+.toggle:has(input:disabled) { cursor: default; }
+
 /* Deviation ruler — an instrument scale, not a dial */
 .cents { margin-top: var(--s5); }
 .cents__head {

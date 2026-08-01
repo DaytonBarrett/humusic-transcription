@@ -33,13 +33,15 @@ function frequencyToNote(freq) {
   return NOTE_NAMES[noteIndex] + octave;
 }
 
-function noteToFrequency(noteName) {
+function noteToMidi(noteName) {
   const m = /^([A-G]#?)(-?\d+)$/.exec(noteName);
   if (!m) return null;
-  const idx = NOTE_NAMES.indexOf(m[1]);
-  const octave = parseInt(m[2], 10);
-  const midi = (octave + 1) * 12 + idx;
-  return 440 * Math.pow(2, (midi - 69) / 12);
+  return (parseInt(m[2], 10) + 1) * 12 + NOTE_NAMES.indexOf(m[1]);
+}
+
+function noteToFrequency(noteName) {
+  const midi = noteToMidi(noteName);
+  return midi === null ? null : 440 * Math.pow(2, (midi - 69) / 12);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -109,10 +111,16 @@ function rms(buffer, start = 0, end = buffer.length) {
 /* ══════════════════════════════════════════════════════════
    FULL-BUFFER SEGMENTATION
    Quantizes the whole recording onto a tempo-derived 16th-note
-   grid (same grid unit the C++ engine uses) and runs YIN on a
-   context-padded window around each segment, so low notes that
-   don't complete a full period inside one grid cell can still
-   be resolved accurately.
+   grid (same grid unit the C++ engine uses) and runs YIN over
+   each segment.
+
+   The analysis window is the segment itself, widened only when
+   a segment is too short to contain enough periods of a low
+   note. Widening it unconditionally is what smears note
+   boundaries: a window three segments wide straddles the notes
+   either side of an onset, and YIN locks onto a bogus long
+   period across the seam — which is how a clean melody picks up
+   spurious very low notes and late-sounding onsets.
 ══════════════════════════════════════════════════════════ */
 const SILENCE_RMS = 0.015;
 const YIN_THRESHOLD = 0.1;
@@ -122,7 +130,7 @@ function analyzeRecording(samples, sampleRate, bpm) {
   const sixteenthDur = 60 / bpm / 4;
   const segmentSamples = Math.max(1, Math.round(sixteenthDur * sampleRate));
   const numSegments = Math.floor(samples.length / segmentSamples);
-  const analysisWindow = Math.max(segmentSamples * 3, MIN_ANALYSIS_WINDOW);
+  const analysisWindow = Math.max(segmentSamples, MIN_ANALYSIS_WINDOW);
 
   const notes = new Array(numSegments);
 
@@ -147,6 +155,44 @@ function analyzeRecording(samples, sampleRate, bpm) {
   }
 
   return notes;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CLEF SELECTION
+   A fixed treble clef pushes a bass line or a low male voice
+   far below the staff, where it reads as a thicket of ledger
+   lines. So the clef is chosen from the line itself: whichever
+   staff sits closest to the music puts the notes on the staff
+   and the ledger lines where they belong.
+
+   The reading is taken from the median pitch, not the mean —
+   a stray octave slip on one note shifts a mean enough to move
+   the whole staff, while the median ignores it.
+══════════════════════════════════════════════════════════ */
+const CLEFS = {
+  // middleLine is the MIDI note sitting on the centre staff line:
+  // B4 for treble, D3 for bass. restKey places rests in the middle
+  // of that staff, which is where a copyist centres them.
+  treble: { vex: 'treble', label: 'treble', middleLine: 71, restKey: 'b/4', xmlSign: 'G', xmlLine: 2 },
+  bass:   { vex: 'bass',   label: 'bass',   middleLine: 50, restKey: 'd/3', xmlSign: 'F', xmlLine: 4 },
+};
+
+function chooseClef(notesArray) {
+  const midis = [];
+  for (const note of notesArray) {
+    if (note === REST) continue;
+    const midi = noteToMidi(note);
+    if (midi !== null) midis.push(midi);
+  }
+  if (!midis.length) return CLEFS.treble;
+
+  midis.sort((a, b) => a - b);
+  const median = midis[midis.length >> 1];
+
+  // Ties go to treble: it's the commoner clef for a single melodic line.
+  return Math.abs(median - CLEFS.treble.middleLine) <= Math.abs(median - CLEFS.bass.middleLine)
+    ? CLEFS.treble
+    : CLEFS.bass;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -240,12 +286,20 @@ function buildEngravingUnits(runs) {
 }
 
 function modelFromNotes(notesArray) {
-  const units = buildEngravingUnits(buildRuns(notesArray));
+  // Bar 1 beat 1 is the first note played. The silence before it only
+  // records how long it took to start after pressing Record, and setting
+  // it as rests would push the whole line off the beat it was played on.
+  let first = 0;
+  while (first < notesArray.length && notesArray[first] === REST) first++;
+  const played = notesArray.slice(first);
+  if (!played.length) return null;
+
+  const units = buildEngravingUnits(buildRuns(played));
   if (!units.length) return null;
   const numMeasures = units[units.length - 1].measureIndex + 1;
   const groups = Array.from({ length: numMeasures }, () => []);
   units.forEach((u, i) => groups[u.measureIndex].push(i));
-  return { units, numMeasures, groups };
+  return { units, numMeasures, groups, clef: chooseClef(played) };
 }
 
 function noteNameToVexKey(name) {
@@ -279,7 +333,7 @@ function buildMusicXML(notesArray, bpm, options = {}) {
   const model = modelFromNotes(notesArray);
   if (!model) return null;
 
-  const { units, numMeasures, groups } = model;
+  const { units, numMeasures, groups, clef } = model;
   const title = options.title || 'humusic transcription';
   const today = new Date().toISOString().slice(0, 10);
 
@@ -308,7 +362,7 @@ function buildMusicXML(notesArray, bpm, options = {}) {
       out.push(`        <divisions>${XML_DIVISIONS}</divisions>`);
       out.push('        <key><fifths>0</fifths><mode>major</mode></key>');
       out.push('        <time><beats>4</beats><beat-type>4</beat-type></time>');
-      out.push('        <clef><sign>G</sign><line>2</line></clef>');
+      out.push(`        <clef><sign>${clef.xmlSign}</sign><line>${clef.xmlLine}</line></clef>`);
       out.push('      </attributes>');
       out.push('      <direction placement="above">');
       out.push('        <direction-type>');
@@ -440,15 +494,17 @@ function renderScore(notesArray, container) {
   const model = modelFromNotes(notesArray);
   if (!model) return null;
 
-  const { units, numMeasures, groups } = model;
+  const { units, numMeasures, groups, clef } = model;
   const VF = window.Vex.Flow;
 
   // One StaveNote per engraving unit, index-aligned with `units`
   // so ties can be built from real note references afterward.
+  // StaveNote needs the clef too — it decides the staff line each
+  // key lands on, so omitting it draws bass pitches at treble heights.
   const staveNotes = units.map((u) => (
     u.note === REST
-      ? new VF.StaveNote({ keys: ['b/4'], duration: `${u.vfDur}r` })
-      : new VF.StaveNote({ keys: [noteNameToVexKey(u.note)], duration: u.vfDur })
+      ? new VF.StaveNote({ keys: [clef.restKey], duration: `${u.vfDur}r`, clef: clef.vex })
+      : new VF.StaveNote({ keys: [noteNameToVexKey(u.note)], duration: u.vfDur, clef: clef.vex })
   ));
 
   const containerWidth = Math.max(container.clientWidth, 300);
@@ -474,7 +530,7 @@ function renderScore(notesArray, container) {
 
     const stave = new VF.Stave(x, y, measureWidth);
     if (col === 0) {
-      stave.addClef('treble');
+      stave.addClef(clef.vex);
       if (m === 0) stave.addTimeSignature('4/4');
     }
     if (m === numMeasures - 1) stave.setEndBarType(VF.Barline.type.END);
@@ -509,7 +565,90 @@ function renderScore(notesArray, container) {
     }
   });
 
-  return { numMeasures, noteCount: units.filter((u) => u.note !== REST).length };
+  return {
+    numMeasures,
+    noteCount: units.filter((u) => u.note !== REST).length,
+    clef: clef.label,
+  };
+}
+
+/* ══════════════════════════════════════════════════════════
+   METRONOME
+   Clicks on the audio clock, not on setTimeout: a timer fired
+   from the main thread drifts under layout and GC, and a click
+   track that drifts is worse than none. A short scheduler runs
+   ahead of the playhead and books each beat at an exact time.
+
+   The click is a filtered noise burst rather than a tone, and
+   that is deliberate. Echo cancellation is off during capture,
+   so without headphones the click bleeds into the microphone.
+   Noise has no periodicity for YIN to lock onto, so a bleeding
+   click is read as unpitched and ignored; a sine would have
+   been transcribed as a note.
+══════════════════════════════════════════════════════════ */
+const METRONOME_LOOKAHEAD = 0.15; // seconds of click track booked ahead
+const METRONOME_TICK_MS = 40;     // scheduler wake-up interval
+const BEATS_PER_BAR = 4;          // the engraver is 4/4 throughout
+
+class Metronome {
+  constructor(audioCtx, bpm) {
+    this.ctx = audioCtx;
+    this.beatDur = 60 / bpm;
+    this.noise = Metronome._noiseBuffer(audioCtx);
+    this.timer = null;
+  }
+
+  static _noiseBuffer(ctx, seconds = 0.1) {
+    const length = Math.ceil(ctx.sampleRate * seconds);
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+    return buffer;
+  }
+
+  start(startTime) {
+    this.nextBeat = startTime;
+    this.beat = 0;
+    this._pump();
+    this.timer = setInterval(() => this._pump(), METRONOME_TICK_MS);
+  }
+
+  _pump() {
+    while (this.nextBeat < this.ctx.currentTime + METRONOME_LOOKAHEAD) {
+      this._click(this.nextBeat, this.beat % BEATS_PER_BAR === 0);
+      this.nextBeat += this.beatDur;
+      this.beat++;
+    }
+  }
+
+  // Downbeats sit higher and louder so the bar is audible, not just the pulse.
+  _click(when, isDownbeat) {
+    const source = this.ctx.createBufferSource();
+    source.buffer = this.noise;
+
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = isDownbeat ? 2600 : 1700;
+    band.Q.value = 1.4;
+
+    const gain = this.ctx.createGain();
+    const peak = isDownbeat ? 0.5 : 0.26;
+    // Ramps are exponential, so they cannot start or land on exactly zero.
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.exponentialRampToValueAtTime(peak, when + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
+
+    source.connect(band);
+    band.connect(gain);
+    gain.connect(this.ctx.destination);
+    source.start(when);
+    source.stop(when + 0.08);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -524,14 +663,17 @@ function renderScore(notesArray, container) {
 const MAX_RECORDING_SECONDS = 180;
 
 class Recorder {
-  constructor({ onLevel, onTuner, onTick, onAutoStop }) {
+  constructor({ onLevel, onTuner, onTick, onAutoStop, bpm, useMetronome }) {
     this.onLevel = onLevel;
     this.onTuner = onTuner;
     this.onTick = onTick;
     this.onAutoStop = onAutoStop;
+    this.bpm = bpm;
+    this.useMetronome = useMetronome;
     this.chunks = [];
     this.recording = false;
     this.sampleRate = null;
+    this.metronome = null;
   }
 
   async start() {
@@ -574,6 +716,13 @@ class Recorder {
       }
     };
 
+    // Beat one lands on the moment capture opened, so the click and the
+    // sixteenth grid the take is quantized against are the same grid.
+    if (this.useMetronome) {
+      this.metronome = new Metronome(this.audioCtx, this.bpm);
+      this.metronome.start(this.startedAt);
+    }
+
     this._tick();
   }
 
@@ -599,6 +748,11 @@ class Recorder {
     if (!this.recording) return null;
     this.recording = false;
     if (this._raf) cancelAnimationFrame(this._raf);
+
+    // Silence the click before the context closes, or already-booked
+    // clicks fire into a closing context.
+    this.metronome?.stop();
+    this.metronome = null;
 
     this.processor.disconnect();
     this.source.disconnect();
@@ -634,6 +788,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const scoreContainer = $('#scoreContainer');
   const exportBtn   = $('#exportBtn');
   const clearBtn    = $('#clearBtn');
+  const metronomeToggle = $('#metronomeToggle');
+  const metronomeState  = $('#metronomeState');
   const toast       = $('#toast');
 
   // Links back to the marketing site are meaningless inside the app
@@ -680,6 +836,7 @@ document.addEventListener('DOMContentLoaded', () => {
     metaState.textContent = 'IDLE';
     levelFill.style.clipPath = 'inset(0 100% 0 0)';
     bpmInput.disabled = false;
+    metronomeToggle.disabled = false;
     centsTrack.classList.remove('is-live');
     updateTuner(null);
   }
@@ -708,6 +865,8 @@ document.addEventListener('DOMContentLoaded', () => {
         onTuner: updateTuner,
         onTick: (t) => { timerText.textContent = formatTime(t); },
         onAutoStop: () => recordBtn.click(),
+        bpm: clampBpm(bpmInput.value),
+        useMetronome: metronomeToggle.checked,
       });
       await recorder.start();
       recordBtn.classList.add('is-recording');
@@ -717,6 +876,7 @@ document.addEventListener('DOMContentLoaded', () => {
       metaRate.textContent = `${(recorder.sampleRate / 1000).toFixed(1)}kHz`;
       centsTrack.classList.add('is-live');
       bpmInput.disabled = true;
+      metronomeToggle.disabled = true;
     } catch (err) {
       console.error(err);
       recorder = null;
@@ -770,7 +930,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const info = renderScore(notes, scoreContainer);
 
       scoreMeta.textContent =
-        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'} · ${info.noteCount} events · ${bpm} bpm · ${lastResult.seconds.toFixed(1)}s`;
+        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'} · ${info.noteCount} events · ${info.clef} · ${bpm} bpm · ${lastResult.seconds.toFixed(1)}s`;
       exportBtn.disabled = false;
       clearBtn.disabled = false;
     } catch (err) {
@@ -816,6 +976,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   bpmInput.addEventListener('blur', () => { bpmInput.value = clampBpm(bpmInput.value); });
+
+  const syncMetronomeLabel = () => {
+    metronomeState.textContent = metronomeToggle.checked ? 'On' : 'Off';
+  };
+  metronomeToggle.addEventListener('change', syncMetronomeLabel);
+  syncMetronomeLabel();
 
   let resizeTimer = null;
   window.addEventListener('resize', () => {
