@@ -595,6 +595,8 @@ function ledgerLines(step, clef) {
   return 0;
 }
 
+const AUTO_BASS_MARGIN = 2;
+
 function chooseClef(runs) {
   let trebleCost = 0;
   let bassCost = 0;
@@ -614,12 +616,27 @@ function chooseClef(runs) {
   if (!totalUnits) return CLEFS.treble;
 
   // Treble is the default for a single melodic line, so bass has to earn the
-  // switch rather than win on a hair: it must save more than one ledger line
-  // per sixteenth on average. Around middle C the two staves are near enough
-  // to symmetric that a bare comparison flips on one ledger line, which is
-  // how a hummed B3 — a note most people would read in treble — ends up
-  // under a bass clef.
-  return trebleCost - bassCost > totalUnits ? CLEFS.bass : CLEFS.treble;
+  // switch rather than win on a hair: it must save well over two ledger lines
+  // per note-length on average. Around middle C the two staves are near
+  // enough to symmetric that a bare comparison flips on a single ledger line,
+  // which is how a hummed melody sitting just under the treble staff ends up
+  // under a bass clef. A real bass line clears this easily — an E2-A2 figure
+  // saves five or six — while a voice noodling around G3 does not.
+  return trebleCost - bassCost > totalUnits * AUTO_BASS_MARGIN ? CLEFS.bass : CLEFS.treble;
+}
+
+/* Which clef to set the line on. Auto reads it from the music, but the
+   reading is a judgement call in the register between the staves, and it
+   cannot know whether it is listening to a tenor (treble clef, by
+   convention) or a cello (bass). So the choice is offered rather than
+   imposed, and it defaults to the clef a melody is usually written in. */
+const CLEF_MODES = ['treble', 'bass', 'auto'];
+const DEFAULT_CLEF_MODE = 'treble';
+
+function resolveClef(runs, mode) {
+  if (mode === 'bass') return CLEFS.bass;
+  if (mode === 'auto') return chooseClef(runs);
+  return CLEFS.treble;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -746,7 +763,7 @@ function buildEngravingUnits(runs, isTriplet) {
   return units;
 }
 
-function modelFromRuns(runs) {
+function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE) {
   // Bar 1 beat 1 is the first note played. The silence around the take only
   // records how long it took to start after pressing Record and how long it
   // took to reach Stop; writing it as rests would push the whole line off
@@ -773,7 +790,7 @@ function modelFromRuns(runs) {
     units,
     numMeasures,
     groups,
-    clef: chooseClef(snapped),
+    clef: resolveClef(snapped, clefMode),
     runs: snapped,
     hasTriplets: isTriplet.some(Boolean),
   };
@@ -811,7 +828,7 @@ function splitPitch(name) {
 }
 
 function buildMusicXML(runs, bpm, options = {}) {
-  const model = modelFromRuns(runs);
+  const model = modelFromRuns(runs, options.clefMode);
   if (!model) return null;
 
   const { units, numMeasures, groups, clef } = model;
@@ -987,9 +1004,9 @@ function timestampSlug() {
 /* ══════════════════════════════════════════════════════════
    ENGRAVING — VexFlow
 ══════════════════════════════════════════════════════════ */
-function renderScore(runs, container) {
+function renderScore(runs, container, options = {}) {
   container.innerHTML = '';
-  const model = modelFromRuns(runs);
+  const model = modelFromRuns(runs, options.clefMode);
   if (!model) return null;
 
   const { units, numMeasures, groups, clef } = model;
@@ -1665,6 +1682,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const playBtn     = $('#playBtn');
   const playLabel   = $('#playLabel');
   const voiceSelect = $('#voiceSelect');
+  const clefSelect  = $('#clefSelect');
   const metronomeToggle = $('#metronomeToggle');
   const metronomeState  = $('#metronomeState');
   const toast       = $('#toast');
@@ -1806,7 +1824,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       scoreEmpty.hidden = true;
       scoreContainer.hidden = false;
-      const info = renderScore(runs, scoreContainer);
+      const info = renderScore(runs, scoreContainer, { clefMode: clefSelect.value });
 
       const parts = [
         `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'}`,
@@ -1845,6 +1863,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function setPlaybackEnabled(enabled) {
     playBtn.disabled = !enabled;
     voiceSelect.disabled = !enabled;
+    clefSelect.disabled = !enabled;
     if (!enabled) player.stop();
   }
 
@@ -1866,6 +1885,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Changing the clef re-engraves from the same model: only the staff the
+  // notes are set on changes, never the notes themselves.
+  clefSelect.addEventListener('change', () => {
+    if (!lastResult) return;
+    try {
+      const info = renderScore(lastResult.runs, scoreContainer, { clefMode: clefSelect.value });
+      scoreMeta.textContent = scoreMeta.textContent.replace(/(treble|bass)/, info.clef);
+    } catch (err) {
+      console.error('Re-engraving on clef change failed:', err);
+    }
+  });
+
   // Switching voice mid-phrase restarts on the new one rather than finishing
   // the phrase on the old, which is what makes it useful for comparing them.
   voiceSelect.addEventListener('change', async () => {
@@ -1880,6 +1911,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const xml = buildMusicXML(lastResult.runs, lastResult.bpm, {
         title: `humusic transcription — ${lastResult.bpm} bpm`,
+        clefMode: clefSelect.value,
       });
       if (!xml) throw new Error('empty score');
       const filename = `humusic-${timestampSlug()}.musicxml`;
@@ -1917,7 +1949,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!lastResult) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      try { renderScore(lastResult.runs, scoreContainer); }
+      try { renderScore(lastResult.runs, scoreContainer, { clefMode: clefSelect.value }); }
       catch (err) { console.error('Re-render on resize failed:', err); }
     }, 160);
   });

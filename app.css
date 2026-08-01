@@ -398,9 +398,9 @@
   color: var(--paper);
 }
 
-/* The voice picker reads as a field on the same rule as the buttons, not as
-   a browser dropdown parked next to them. */
-.voice {
+/* The pickers read as fields on the same rule as the buttons, not as browser
+   dropdowns parked next to them. */
+.picker {
   display: inline-flex;
   align-items: center;
   gap: var(--s2);
@@ -408,9 +408,9 @@
   padding: 0 var(--s3) 0 var(--s4);
   border: var(--rule);
 }
-.voice__label { color: var(--ink-3); }
-.voice:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
-.voice__select {
+.picker__label { color: var(--ink-3); }
+.picker:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.picker__select {
   appearance: none;
   -webkit-appearance: none;
   background: none;
@@ -430,9 +430,9 @@
   background-size: 4px 4px, 4px 4px;
   background-repeat: no-repeat;
 }
-.voice__select:focus { outline: none; }
-.voice:has(.voice__select:disabled) { opacity: 0.35; }
-.voice__select:disabled { cursor: not-allowed; }
+.picker__select:focus { outline: none; }
+.picker:has(.picker__select:disabled) { opacity: 0.35; }
+.picker__select:disabled { cursor: not-allowed; }
 
 /* ──────────────────────────────────────────────────────────
    COLOPHON

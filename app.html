@@ -99,7 +99,8 @@
         Pitch is resolved with the YIN autocorrelation estimator, then
         quantized against the tempo above — sixteenths and triplets alike,
         each beat read as straight or swung from how you played it. The
-        clef is chosen from the range you played. Use headphones with the
+        score is set on the clef you pick — treble unless you say otherwise,
+        or Auto to read it from your range. Use headphones with the
         metronome on, or the click is recorded along with the line.
       </p>
     </section>
@@ -133,13 +134,22 @@
           <span id="playLabel">Play</span>
         </button>
 
-        <label class="voice" for="voiceSelect">
-          <span class="label voice__label">Voice</span>
-          <select class="voice__select mono" id="voiceSelect" disabled>
+        <label class="picker" for="voiceSelect">
+          <span class="label picker__label">Voice</span>
+          <select class="picker__select mono" id="voiceSelect" disabled>
             <option value="piano" selected>Piano</option>
             <option value="guitar">Guitar</option>
             <option value="sax">Saxophone</option>
             <option value="synth">Synth</option>
+          </select>
+        </label>
+
+        <label class="picker" for="clefSelect">
+          <span class="label picker__label">Clef</span>
+          <select class="picker__select mono" id="clefSelect" disabled>
+            <option value="treble" selected>Treble</option>
+            <option value="bass">Bass</option>
+            <option value="auto">Auto</option>
           </select>
         </label>
 
