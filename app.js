@@ -3,8 +3,9 @@
    Recorder · monophonic pitch transcriber · engraver · export.
 
    Pipeline:
-     mic → PCM capture (start/stop) → YIN pitch detection per
-     tempo-quantized segment → note-name array → duration
+     mic → PCM capture (start/stop) → YIN pitch measurement per
+     tempo-quantized segment → note tracking (the measurements
+     grouped into notes, and only then named) → duration
      decomposition into ties/measures → VexFlow engraving
      and MusicXML export off the same intermediate form, so the
      printed score and the exported file can never disagree.
@@ -23,14 +24,26 @@ const $ = (sel, ctx = document) => ctx.querySelector(sel);
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const REST = 'Rest';
 
-function frequencyToNote(freq) {
-  if (!freq || freq <= 20) return REST;
-  const midiFloat = 69 + 12 * Math.log2(freq / 440);
-  const midiNote = Math.round(midiFloat);
+// Kept as a float: rounding to a note name is the last step of transcription,
+// never an intermediate one. A held note wanders either side of a semitone
+// boundary, and rounding each measurement in isolation turns that wander into
+// a stream of alternating note names — which is a rhythm error, not a pitch
+// error, because every change of name starts a new note.
+function frequencyToMidi(freq) {
+  return !freq || freq <= 20 ? null : 69 + 12 * Math.log2(freq / 440);
+}
+
+function midiToNoteName(midi) {
+  const midiNote = Math.round(midi);
   const octave = Math.floor(midiNote / 12) - 1;
   let noteIndex = midiNote % 12;
   if (noteIndex < 0) noteIndex += 12;
   return NOTE_NAMES[noteIndex] + octave;
+}
+
+function frequencyToNote(freq) {
+  const midi = frequencyToMidi(freq);
+  return midi === null ? REST : midiToNoteName(midi);
 }
 
 function noteToMidi(noteName) {
@@ -51,17 +64,29 @@ function noteToFrequency(noteName) {
    which is why it's the standard choice for monophonic tuners.
    Returns { frequency, clarity } or null when no periodic
    signal is found (silence / noise / unpitched).
+
+   The lag search is bounded to the musical range rather than
+   running to half the window. Lags longer than the lowest note
+   we accept cannot be a melody — they are room rumble and
+   handling noise, and letting YIN dip into them is one way a
+   held note picks up a stray sub-audible reading mid-sustain.
 ══════════════════════════════════════════════════════════ */
-function yinDetectPitch(buffer, sampleRate, threshold = 0.1) {
+function yinDetectPitch(buffer, sampleRate, threshold = 0.1, minFreq = MIN_PITCH_HZ, maxFreq = MAX_PITCH_HZ) {
   const half = buffer.length >> 1;
   if (half < 32) return null;
 
-  const yinBuffer = new Float32Array(half);
+  const maxTau = Math.min(half - 1, Math.floor(sampleRate / minFreq));
+  const minTau = Math.max(2, Math.ceil(sampleRate / maxFreq));
+  if (maxTau <= minTau) return null;
 
-  // Step 1+2: difference function, cumulative mean normalized.
+  const yinBuffer = new Float32Array(maxTau + 1);
+
+  // Step 1+2: difference function, cumulative mean normalized. The running
+  // sum has to start at tau=1 even though the search starts later — the
+  // normalization is defined over every lag up to the current one.
   yinBuffer[0] = 1;
   let runningSum = 0;
-  for (let tau = 1; tau < half; tau++) {
+  for (let tau = 1; tau <= maxTau; tau++) {
     let sum = 0;
     for (let j = 0; j < half; j++) {
       const delta = buffer[j] - buffer[j + tau];
@@ -73,9 +98,9 @@ function yinDetectPitch(buffer, sampleRate, threshold = 0.1) {
 
   // Step 3: absolute threshold — first dip below threshold that's a local min.
   let tauEstimate = -1;
-  for (let tau = 2; tau < half; tau++) {
+  for (let tau = minTau; tau <= maxTau; tau++) {
     if (yinBuffer[tau] < threshold) {
-      while (tau + 1 < half && yinBuffer[tau + 1] < yinBuffer[tau]) tau++;
+      while (tau + 1 <= maxTau && yinBuffer[tau + 1] < yinBuffer[tau]) tau++;
       tauEstimate = tau;
       break;
     }
@@ -84,7 +109,7 @@ function yinDetectPitch(buffer, sampleRate, threshold = 0.1) {
 
   // Step 4: parabolic interpolation around the minimum for sub-sample precision.
   const x0 = tauEstimate < 1 ? tauEstimate : tauEstimate - 1;
-  const x2 = tauEstimate + 1 < half ? tauEstimate + 1 : tauEstimate;
+  const x2 = tauEstimate + 1 <= maxTau ? tauEstimate + 1 : tauEstimate;
   let betterTau;
   if (x0 === tauEstimate) {
     betterTau = yinBuffer[tauEstimate] <= yinBuffer[x2] ? tauEstimate : x2;
@@ -114,36 +139,74 @@ function rms(buffer, start = 0, end = buffer.length) {
    grid (same grid unit the C++ engine uses) and runs YIN over
    each segment.
 
-   The analysis window is the segment itself, widened only when
-   a segment is too short to contain enough periods of a low
-   note. Widening it unconditionally is what smears note
-   boundaries: a window three segments wide straddles the notes
-   either side of an onset, and YIN locks onto a bogus long
+   The analysis window is centred on the segment and kept short:
+   wide enough to hold several periods of a low note, no wider.
+   A window that spans a note boundary straddles the notes on
+   either side of the onset, and YIN locks onto a bogus long
    period across the seam — which is how a clean melody picks up
    spurious very low notes and late-sounding onsets.
+
+   What comes out is one *measurement* per 16th, not one note
+   name per 16th. Naming happens later, per note, once the
+   measurements have been grouped.
 ══════════════════════════════════════════════════════════ */
-const SILENCE_RMS = 0.015;
 const YIN_THRESHOLD = 0.1;
-const MIN_ANALYSIS_WINDOW = 2048;
 
-function analyzeRecording(samples, sampleRate, bpm) {
-  const sixteenthDur = 60 / bpm / 4;
-  const segmentSamples = Math.max(1, Math.round(sixteenthDur * sampleRate));
+// Voicing. The floor is absolute — a quiet room never reaches it — but the
+// working threshold also scales with the take, so a soft recording is not
+// read as silence and a loud one does not promote its own room tone into
+// notes. The hysteresis matters more than either number: a note that has
+// started stays voiced down to a far lower level than it took to start it.
+// Without that, the natural decay of a held note dips under a fixed floor
+// and punches a rest through the middle of the note, splitting it in two.
+const SILENCE_RMS = 0.015;
+const VOICED_PEAK_RATIO = 0.06;
+const RELEASE_RATIO = 0.45;
+
+// E1 sits below a bass guitar's low string and C7 above a soprano's top, so
+// a reading outside this range is a detection error rather than a melody.
+const MIN_PITCH_MIDI = 28;
+const MAX_PITCH_MIDI = 96;
+const MIN_PITCH_HZ = 440 * Math.pow(2, (MIN_PITCH_MIDI - 69) / 12);
+const MAX_PITCH_HZ = 440 * Math.pow(2, (MAX_PITCH_MIDI - 69) / 12);
+
+// 46ms holds two periods of the lowest note we accept; past ~93ms the window
+// starts crossing note boundaries at ordinary tempos without buying accuracy.
+const MIN_ANALYSIS_SECONDS = 0.046;
+const MAX_ANALYSIS_SECONDS = 0.093;
+
+/* One entry per 16th. `midi` is a float — or null where nothing pitched was
+   found — and `strong`/`audible` are the two sides of the voicing hysteresis:
+   `strong` is loud enough to begin a note, `audible` only loud enough to keep
+   one going. `filled` marks a frame bridged across a dropout rather than
+   measured, which the onset test has to know about. */
+function measureFrames(samples, sampleRate, segmentSamples) {
   const numSegments = Math.floor(samples.length / segmentSamples);
-  const analysisWindow = Math.max(segmentSamples, MIN_ANALYSIS_WINDOW);
+  const frames = new Array(numSegments);
 
-  const notes = new Array(numSegments);
+  let peak = 0;
+  for (let i = 0; i < numSegments; i++) {
+    const energy = rms(samples, i * segmentSamples, (i + 1) * segmentSamples);
+    if (energy > peak) peak = energy;
+    frames[i] = { energy, midi: null, voiced: false, filled: false, audible: false, strong: false };
+  }
+
+  const onThreshold = Math.max(SILENCE_RMS, peak * VOICED_PEAK_RATIO);
+  const offThreshold = onThreshold * RELEASE_RATIO;
+
+  const analysisWindow = Math.min(
+    Math.round(sampleRate * MAX_ANALYSIS_SECONDS),
+    Math.max(segmentSamples, Math.round(sampleRate * MIN_ANALYSIS_SECONDS)),
+  );
 
   for (let i = 0; i < numSegments; i++) {
-    const segStart = i * segmentSamples;
-    const segEnd = segStart + segmentSamples;
+    // Below the release threshold nothing can be voiced however it sounds,
+    // so there is no reason to pay for YIN over silence.
+    if (frames[i].energy < offThreshold) continue;
+    frames[i].audible = true;
+    frames[i].strong = frames[i].energy >= onThreshold;
 
-    if (rms(samples, segStart, segEnd) < SILENCE_RMS) {
-      notes[i] = REST;
-      continue;
-    }
-
-    const center = segStart + segmentSamples / 2;
+    const center = i * segmentSamples + segmentSamples / 2;
     let winStart = Math.round(center - analysisWindow / 2);
     let winEnd = winStart + analysisWindow;
     if (winStart < 0) { winEnd -= winStart; winStart = 0; }
@@ -151,10 +214,200 @@ function analyzeRecording(samples, sampleRate, bpm) {
     winStart = Math.max(0, winStart);
 
     const result = yinDetectPitch(samples.subarray(winStart, winEnd), sampleRate, YIN_THRESHOLD);
-    notes[i] = result ? frequencyToNote(result.frequency) : REST;
+    const midi = result ? frequencyToMidi(result.frequency) : null;
+    if (midi !== null && midi >= MIN_PITCH_MIDI && midi <= MAX_PITCH_MIDI) frames[i].midi = midi;
   }
 
-  return notes;
+  let sounding = false;
+  for (const frame of frames) {
+    frame.voiced = frame.midi !== null && (sounding ? frame.audible : frame.strong);
+    sounding = frame.voiced;
+  }
+
+  return frames;
+}
+
+/* ══════════════════════════════════════════════════════════
+   NOTE TRACKING
+   Groups the per-16th measurements into notes. This is the step
+   that decides rhythm: every group boundary is a new note, so
+   anything that fragments a group writes a held note out as a
+   run of short ones.
+
+   Three defences, in order — a median filter for single-frame
+   slips, gap filling for momentary dropouts, and a pitch
+   reference with hysteresis so a note is only ended by a real
+   move away from where it has been sitting, not by the wobble
+   of a voice sustaining across a semitone boundary.
+══════════════════════════════════════════════════════════ */
+
+// A note struck again at the same pitch has no pitch change to find it by,
+// so it has to be found by its attack. On a 16th grid an attack and a swell
+// out of a dip look much alike in energy alone, so the test is deliberately
+// narrow: the sound must have all but stopped — down where only the release
+// hysteresis was still holding the note open — and then come back loud. That
+// misses a re-articulation played legato over a still-sounding note, which
+// writes two notes as one held note. The opposite mistake is the one worth
+// avoiding: reading every swell as an attack shatters held notes, which is
+// exactly the failure this tracker exists to prevent.
+const ONSET_RISE_RATIO = 2.5;
+
+// How far the pitch must move from where the note has been sitting before
+// it counts as a different note. Comfortably wider than vibrato (±50 cents
+// is a wide operatic wobble) and comfortably inside a semitone.
+const NEW_NOTE_SEMITONES = 0.7;
+
+// A stretch this long with sound but no measurable pitch is unpitched
+// material in its own right, not a dropout to be papered over.
+const MAX_DROPOUT_FRAMES = 2;
+
+function median(values) {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[sorted.length >> 1];
+}
+
+// Where a note is sitting, in MIDI floats. The median fixes the centre and
+// shrugs off a stray frame; averaging the frames near it then recovers the
+// precision a median discards — vibrato is symmetric about the pitch, so the
+// frames either side of centre carry real information, and on an even number
+// of frames a bare median also leans on the upper of the two middle values.
+// That lean is enough to name a note a semitone sharp when it only had four
+// frames to go on.
+function centrePitch(pitches) {
+  const centre = median(pitches);
+  let sum = 0;
+  let n = 0;
+  for (const p of pitches) {
+    if (Math.abs(p - centre) < 0.5) { sum += p; n++; }
+  }
+  return n ? sum / n : centre;
+}
+
+// Three-wide median over the pitch track. An octave slip or a transient at
+// the attack shows up as one frame unlike both its neighbours, and a median
+// removes exactly that while leaving real note boundaries where they are —
+// at a boundary the window reads (old, new, new), whose median is new.
+function smoothPitch(frames) {
+  const raw = frames.map((f) => (f.voiced ? f.midi : null));
+  for (let i = 1; i < frames.length - 1; i++) {
+    if (raw[i - 1] === null || raw[i] === null || raw[i + 1] === null) continue;
+    frames[i].midi = median([raw[i - 1], raw[i], raw[i + 1]]);
+  }
+}
+
+// Bridges gaps where the note went on sounding but no pitch came back — a
+// consonant, a bow change, noise smeared over the measurement. Energy is the
+// test, and it is the honest one: if the sound continued at the same pitch
+// either side, the note continued. A gap that actually falls silent is left
+// alone, because a 16th of silence is a rest and the score should show it.
+function fillDropouts(frames) {
+  for (let i = 1; i < frames.length; i++) {
+    if (frames[i].voiced) continue;
+    let end = i;
+    let audible = true;
+    while (end < frames.length && !frames[end].voiced) {
+      if (!frames[end].audible) audible = false;
+      end++;
+    }
+
+    const before = frames[i - 1];
+    const after = frames[end];
+    if (audible && end - i <= MAX_DROPOUT_FRAMES && before.voiced && after?.voiced
+        && Math.abs(before.midi - after.midi) < NEW_NOTE_SEMITONES) {
+      for (let k = i; k < end; k++) {
+        frames[k].voiced = true;
+        frames[k].filled = true;
+        frames[k].midi = (before.midi + after.midi) / 2;
+      }
+    }
+    i = end - 1;
+  }
+}
+
+function trackNotes(frames) {
+  const runs = [];
+  let pitches = null; // MIDI floats of the note being tracked
+  let units = 0;
+  let startedByOnset = false;
+
+  const flush = () => {
+    if (!pitches) return;
+    // The note is named once, from the middle of everything measured across
+    // it — so a note that drifts or wobbles over a boundary still resolves
+    // to the single pitch it was heard as, rather than to whichever side of
+    // the boundary each individual 16th happened to land on.
+    runs.push({ note: midiToNoteName(centrePitch(pitches)), units, startedByOnset });
+    pitches = null;
+  };
+
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+
+    if (!frame.voiced) {
+      flush();
+      const last = runs[runs.length - 1];
+      if (last && last.note === REST) last.units++;
+      else runs.push({ note: REST, units: 1, startedByOnset: false });
+      continue;
+    }
+
+    const previous = frames[i - 1];
+    // A filled gap is a dip by definition, so the recovery out of one always
+    // looks like an attack. Exempt it, or every bridged dropout re-splits
+    // the note the bridge just repaired.
+    const onset = !!previous && previous.voiced && !previous.filled
+      && !previous.strong && frame.strong
+      && frame.energy > previous.energy * ONSET_RISE_RATIO;
+
+    let boundary = onset || pitches === null;
+    if (!boundary && Math.abs(frame.midi - centrePitch(pitches)) >= NEW_NOTE_SEMITONES) {
+      // One frame away from the reference is a slip; two in a row is a new
+      // note. Only ask for that confirmation while there is a voiced frame
+      // left to ask — at the end of a phrase there is nothing to confirm with.
+      const next = frames[i + 1];
+      boundary = !next || !next.voiced
+        || Math.abs(next.midi - centrePitch(pitches)) >= NEW_NOTE_SEMITONES;
+    }
+
+    if (boundary) {
+      flush();
+      pitches = [];
+      units = 0;
+      startedByOnset = onset;
+    }
+    pitches.push(frame.midi);
+    units++;
+  }
+
+  flush();
+  return runs;
+}
+
+// Two runs that were split on pitch but round to the same name were never
+// two notes — the reference simply drifted far enough to trip the boundary
+// inside one long note. Runs that begin on a real attack are kept apart:
+// that is a repeated note, and it has to stay two notes on the page.
+function mergeUnarticulatedRuns(runs) {
+  const merged = [];
+  for (const run of runs) {
+    const last = merged[merged.length - 1];
+    if (last && last.note === run.note && !run.startedByOnset) last.units += run.units;
+    else merged.push({ ...run });
+  }
+  return merged;
+}
+
+/* Returns [{ note, units }] — one entry per note, `units` counted in 16ths.
+   Runs rather than a flat per-16th array, because two adjacent notes at the
+   same pitch are a distinction a flat array cannot carry. */
+function analyzeRecording(samples, sampleRate, bpm) {
+  const sixteenthDur = 60 / bpm / 4;
+  const segmentSamples = Math.max(1, Math.round(sixteenthDur * sampleRate));
+
+  const frames = measureFrames(samples, sampleRate, segmentSamples);
+  smoothPitch(frames);
+  fillDropouts(frames);
+  return mergeUnarticulatedRuns(trackNotes(frames));
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -167,7 +420,9 @@ function analyzeRecording(samples, sampleRate, bpm) {
 
    The reading is taken from the median pitch, not the mean —
    a stray octave slip on one note shifts a mean enough to move
-   the whole staff, while the median ignores it.
+   the whole staff, while the median ignores it. Each note
+   counts for its length, so a line is judged by where it
+   actually sits rather than by a flurry of passing notes.
 ══════════════════════════════════════════════════════════ */
 const CLEFS = {
   // middleLine is the MIDI note sitting on the centre staff line:
@@ -177,29 +432,28 @@ const CLEFS = {
   bass:   { vex: 'bass',   label: 'bass',   middleLine: 50, restKey: 'd/3', xmlSign: 'F', xmlLine: 4 },
 };
 
-function chooseClef(notesArray) {
+function chooseClef(runs) {
   const midis = [];
-  for (const note of notesArray) {
-    if (note === REST) continue;
-    const midi = noteToMidi(note);
-    if (midi !== null) midis.push(midi);
+  for (const run of runs) {
+    if (run.note === REST) continue;
+    const midi = noteToMidi(run.note);
+    if (midi !== null) for (let i = 0; i < run.units; i++) midis.push(midi);
   }
   if (!midis.length) return CLEFS.treble;
 
-  midis.sort((a, b) => a - b);
-  const median = midis[midis.length >> 1];
+  const centre = median(midis);
 
   // Ties go to treble: it's the commoner clef for a single melodic line.
-  return Math.abs(median - CLEFS.treble.middleLine) <= Math.abs(median - CLEFS.bass.middleLine)
+  return Math.abs(centre - CLEFS.treble.middleLine) <= Math.abs(centre - CLEFS.bass.middleLine)
     ? CLEFS.treble
     : CLEFS.bass;
 }
 
 /* ══════════════════════════════════════════════════════════
    ENGRAVING MODEL
-   Turns a flat notes-array (one entry per 16th note) into
-   correctly tied, barred durations — not a naive grid of 16th
-   notes, but idiomatic values the way a person would notate.
+   Turns the tracker's runs into correctly tied, barred
+   durations — not a naive grid of 16th notes, but idiomatic
+   values the way a person would notate.
    Both the on-screen score and the MusicXML export are built
    from this single model, so they cannot drift apart.
 ══════════════════════════════════════════════════════════ */
@@ -231,16 +485,6 @@ function decomposeDuration(units) {
     while (remaining >= u) { tokens.push(dur); remaining -= u; }
   }
   return tokens;
-}
-
-function buildRuns(notesArray) {
-  const runs = [];
-  for (const note of notesArray) {
-    const last = runs[runs.length - 1];
-    if (last && last.note === note) last.units++;
-    else runs.push({ note, units: 1 });
-  }
-  return runs;
 }
 
 // Splits runs across measure boundaries and decomposes each piece into
@@ -285,16 +529,19 @@ function buildEngravingUnits(runs) {
   return units;
 }
 
-function modelFromNotes(notesArray) {
-  // Bar 1 beat 1 is the first note played. The silence before it only
-  // records how long it took to start after pressing Record, and setting
-  // it as rests would push the whole line off the beat it was played on.
+function modelFromRuns(runs) {
+  // Bar 1 beat 1 is the first note played. The silence around the take only
+  // records how long it took to start after pressing Record and how long it
+  // took to reach Stop; writing it as rests would push the whole line off
+  // the beat it was played on and hang empty bars off the end.
   let first = 0;
-  while (first < notesArray.length && notesArray[first] === REST) first++;
-  const played = notesArray.slice(first);
+  while (first < runs.length && runs[first].note === REST) first++;
+  let last = runs.length;
+  while (last > first && runs[last - 1].note === REST) last--;
+  const played = runs.slice(first, last);
   if (!played.length) return null;
 
-  const units = buildEngravingUnits(buildRuns(played));
+  const units = buildEngravingUnits(played);
   if (!units.length) return null;
   const numMeasures = units[units.length - 1].measureIndex + 1;
   const groups = Array.from({ length: numMeasures }, () => []);
@@ -329,8 +576,8 @@ function splitPitch(name) {
   return { step: m[1], alter: m[2] === '#' ? 1 : 0, octave: parseInt(m[3], 10) };
 }
 
-function buildMusicXML(notesArray, bpm, options = {}) {
-  const model = modelFromNotes(notesArray);
+function buildMusicXML(runs, bpm, options = {}) {
+  const model = modelFromRuns(runs);
   if (!model) return null;
 
   const { units, numMeasures, groups, clef } = model;
@@ -489,9 +736,9 @@ function timestampSlug() {
 /* ══════════════════════════════════════════════════════════
    ENGRAVING — VexFlow
 ══════════════════════════════════════════════════════════ */
-function renderScore(notesArray, container) {
+function renderScore(runs, container) {
   container.innerHTML = '';
-  const model = modelFromNotes(notesArray);
+  const model = modelFromRuns(runs);
   if (!model) return null;
 
   const { units, numMeasures, groups, clef } = model;
@@ -912,22 +1159,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const bpm = clampBpm(bpmInput.value);
 
     try {
-      const notes = analyzeRecording(captured.samples, captured.sampleRate, bpm);
+      const runs = analyzeRecording(captured.samples, captured.sampleRate, bpm);
 
-      if (notes.length === 0) {
+      if (runs.length === 0) {
         showToast('Too short to quantize at this tempo. Record longer, or raise the BPM.', 'error');
         return;
       }
-      if (notes.every((n) => n === REST)) {
+      if (runs.every((r) => r.note === REST)) {
         showToast('No pitched notes detected. Try playing closer to the microphone.', 'error');
         return;
       }
 
-      lastResult = { notes, bpm, seconds: captured.samples.length / captured.sampleRate };
+      lastResult = { runs, bpm, seconds: captured.samples.length / captured.sampleRate };
 
       scoreEmpty.hidden = true;
       scoreContainer.hidden = false;
-      const info = renderScore(notes, scoreContainer);
+      const info = renderScore(runs, scoreContainer);
 
       scoreMeta.textContent =
         `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'} · ${info.noteCount} events · ${info.clef} · ${bpm} bpm · ${lastResult.seconds.toFixed(1)}s`;
@@ -950,7 +1197,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!lastResult) return;
     exportBtn.disabled = true;
     try {
-      const xml = buildMusicXML(lastResult.notes, lastResult.bpm, {
+      const xml = buildMusicXML(lastResult.runs, lastResult.bpm, {
         title: `humusic transcription — ${lastResult.bpm} bpm`,
       });
       if (!xml) throw new Error('empty score');
@@ -988,7 +1235,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!lastResult) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      try { renderScore(lastResult.notes, scoreContainer); }
+      try { renderScore(lastResult.runs, scoreContainer); }
       catch (err) { console.error('Re-render on resize failed:', err); }
     }, 160);
   });

@@ -52,6 +52,14 @@ Rhythm is quantized against a sixteenth-note grid derived from the tempo, then
 consolidated into idiomatic durations — dotted values, ties across barlines —
 rather than being written out as a wall of sixteenths.
 
+Pitch is measured once per sixteenth but *named* once per note, which is what
+keeps a held note whole. Every change of note name starts a new note, so a
+sustain that wobbles across a semitone boundary — an ordinary amount of
+vibrato on a note sung slightly sharp — would otherwise be written as a stream
+of alternating sixteenths. The measurements are median-filtered, brief
+dropouts inside a sustain are bridged, and a note ends only when the pitch
+genuinely leaves where it has been sitting or a fresh attack arrives.
+
 **Limitations worth knowing:** the detector is monophonic, so chords will not
 transcribe correctly; everything is written in 4/4 and treble clef; and the
 tempo is taken from you rather than inferred from the audio.

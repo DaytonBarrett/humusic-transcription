@@ -17,8 +17,8 @@ const std::vector<std::string> NOTE_NAMES = {
 };
 
 // ---------------------------------------------------------------------
-// This is the generalized version of the range-checking idea you had
-// commented out (e.g. "if freq is between 479.82 and 508.35 -> B4").
+// This is the generalized version of the range-checking idea 
+//(e.g. "if freq is between 479.82 and 508.35 -> B4").
 // Instead of hand-typing a frequency range for every note in every
 // octave, we compute the nearest note mathematically using the
 // standard equal-temperament formula, with A4 = 440 Hz as the anchor:
@@ -28,9 +28,7 @@ const std::vector<std::string> NOTE_NAMES = {
 // Rounding to the nearest integer MIDI note is mathematically
 // equivalent to picking whichever named note's frequency range the
 // peak falls into -- the boundaries between notes sit at the
-// geometric mean of their frequencies, same as the numbers you'd
-// already worked out by hand (e.g. sqrt(493.88 * 523.25) ~= 508.37,
-// matching your B4/C5 boundary of 508.35).
+// geometric mean of their frequencies
 // ---------------------------------------------------------------------
 std::string frequencyToNote(float freq) {
     if (freq <= 20.0f) {
