@@ -88,6 +88,17 @@
   --ui:      'Archivo', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   --mono:    'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
+  /* Weight. Archivo and Bodoni Moda are variable faces carrying a real
+     400–700 axis, so anything in that range is a drawn weight rather than
+     an interpolation the browser invents. IBM Plex Mono is not: it ships
+     as two static cuts, 400 and 500. Ask it for 600 and the browser
+     synthesises a bold by smearing the outlines, which at the sizes the
+     mono is used for — 10 and 11px, letterspaced, uppercase — turns crisp
+     type to mud. --w-mono is therefore a ceiling, not a suggestion. */
+  --w-body:   450;
+  --w-medium: 500;
+  --w-mono:   500;
+
   --fs-10: 0.625rem;
   --fs-11: 0.6875rem;
   --fs-12: 0.75rem;
@@ -153,6 +164,7 @@ body {
   color: var(--ink);
   font-family: var(--ui);
   font-size: var(--fs-15);
+  font-weight: var(--w-body);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -188,7 +200,7 @@ input, select, textarea { font: inherit; color: inherit; }
 .display {
   font-family: var(--display);
   font-optical-sizing: auto;
-  font-weight: 400;
+  font-weight: var(--w-body);
   line-height: 0.94;
   letter-spacing: -0.02em;
 }
@@ -198,10 +210,14 @@ input, select, textarea { font: inherit; color: inherit; }
 .label {
   font-family: var(--mono);
   font-size: var(--fs-10);
-  font-weight: 500;
+  font-weight: var(--w-mono);
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--ink-3);
+  /* Already at the mono's heaviest real cut, so the readability that a
+     weight bump buys elsewhere has to come from contrast here instead:
+     --ink-3 on paper is 3.6:1, which fails AA for text this small; the
+     same grey on the dark bands already gets overridden to --ink-4. */
+  color: var(--ink-2);
 }
 
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -209,7 +225,7 @@ input, select, textarea { font: inherit; color: inherit; }
 .seq {
   font-family: var(--display);
   font-size: var(--fs-21);
-  font-weight: 400;
+  font-weight: var(--w-body);
   font-style: italic;
   line-height: 1;
 }
@@ -297,7 +313,7 @@ input, select, textarea { font: inherit; color: inherit; }
   color: var(--ink);
   font-family: var(--mono);
   font-size: var(--fs-11);
-  font-weight: 500;
+  font-weight: var(--w-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;

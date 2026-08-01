@@ -157,24 +157,49 @@ main { position: relative; z-index: 1; }
   background: var(--ink);
   padding-block: var(--s3);
 }
+/* The strip is built from identical groups laid end to end, and the
+   animation shifts it by exactly one group's width — at which point the
+   next group is standing precisely where the last one began, so the loop
+   has no seam to see. The old keyframe shifted by -50% of the track, which
+   is only the same distance when the track holds exactly two copies; on a
+   wide desktop two copies are narrower than the window, so the strip ran
+   out mid-scroll and the text reappeared out of nowhere on the right.
+
+   The shift and the duration are measured in script.js, because only the
+   browser knows how wide the words actually are once the fonts have
+   loaded. Duration is derived from the width, so the speed stays the same
+   however many copies it took to cover the screen. */
 .ticker__track {
+  display: flex;
+  width: max-content;
+}
+.ticker__track.is-live {
+  animation: ticker var(--ticker-duration, 34s) linear infinite;
+  /* For a left-to-right drift instead, add: animation-direction: reverse; */
+}
+/* No gap between groups — the spacing that separates one group from the
+   next belongs to the group, or the wrap would land a half-gap out of step
+   on every cycle and creep sideways over time. */
+.ticker__group {
   display: flex;
   align-items: center;
   gap: var(--s6);
-  width: max-content;
-  animation: ticker 34s linear infinite;
+  padding-right: var(--s6);
 }
 .ticker__track span {
   font-family: var(--mono);
   font-size: var(--fs-11);
-  font-weight: 500;
+  font-weight: var(--w-mono);
   letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--paper);
   white-space: nowrap;
 }
 .ticker__track i { color: var(--blue-lift); font-style: normal; }
-@keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to   { transform: translateX(calc(var(--ticker-shift, 50%) * -1)); }
+}
 
 /* ──────────────────────────────────────────────────────────
    BANDS
@@ -238,7 +263,7 @@ main { position: relative; z-index: 1; }
 .entry__body h3 {
   font-family: var(--display);
   font-size: var(--fs-28);
-  font-weight: 400;
+  font-weight: var(--w-medium);
   letter-spacing: -0.02em;
   line-height: 1.05;
   margin-bottom: var(--s2);
@@ -275,7 +300,7 @@ main { position: relative; z-index: 1; }
 .method__step h3 {
   font-family: var(--display);
   font-size: var(--fs-28);
-  font-weight: 400;
+  font-weight: var(--w-medium);
   letter-spacing: -0.02em;
   margin-bottom: var(--s3);
 }

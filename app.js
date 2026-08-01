@@ -768,7 +768,11 @@ function renderScore(runs, container) {
   renderer.resize(totalWidth, totalHeight);
   const ctx = renderer.getContext();
 
-  const voices = [];
+  // Pass 1: lay out every measure, but draw nothing yet. Accidentals have to
+  // be applied across the whole line before anything is formatted — they are
+  // modifiers, so they widen the notes they sit on, and a modifier added to a
+  // note that has already been drawn never appears at all.
+  const measures = [];
   for (let m = 0; m < numMeasures; m++) {
     const row = Math.floor(m / measuresPerRow);
     const col = m % measuresPerRow;
@@ -781,34 +785,58 @@ function renderScore(runs, container) {
       if (m === 0) stave.addTimeSignature('4/4');
     }
     if (m === numMeasures - 1) stave.setEndBarType(VF.Barline.type.END);
-    stave.setContext(ctx).draw();
 
     const notesForMeasure = groups[m].map((i) => staveNotes[i]);
     const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(true);
     voice.addTickables(notesForMeasure);
 
-    new VF.Formatter().joinVoices([voice]).format([voice], measureWidth - 62);
-    voice.draw(ctx, stave);
-
-    // beam_rests:false (the default) correctly breaks beam groups at rests.
-    VF.Beam.generateBeams(notesForMeasure).forEach((b) => b.setContext(ctx).draw());
-
-    voices.push(voice);
+    measures.push({ stave, voice, notes: notesForMeasure });
   }
 
-  VF.Accidental.applyAccidentals(voices, 'C');
+  // applyAccidentals reads one voice as one measure, which is exactly how the
+  // MusicXML export tracks them, so the page and the file agree on every
+  // sharp and every courtesy natural.
+  VF.Accidental.applyAccidentals(measures.map((entry) => entry.voice), 'C');
 
-  // Ties are drawn after every measure is formatted, since a tie reads
-  // the final rendered position of both notes — including ties that
-  // cross from one measure or system into the next.
+  // Pass 2: beam, format, draw — in that order, and the order is the point.
+  // A StaveNote draws its own stem only while it has no beam, and Beam.draw
+  // draws stems for the notes it owns. Beaming after the voice is drawn
+  // leaves both behind: two stems on every beamed note, plus the flags the
+  // note drew when it still thought it was unbeamed.
+  for (const { stave, voice, notes } of measures) {
+    // beam_rests:false (the default) correctly breaks beam groups at rests.
+    const beams = VF.Beam.generateBeams(notes);
+
+    stave.setContext(ctx).draw();
+    new VF.Formatter().joinVoices([voice]).format([voice], measureWidth - 62);
+    voice.draw(ctx, stave);
+    beams.forEach((b) => b.setContext(ctx).draw());
+  }
+
+  // Ties are drawn after every measure is formatted, since a tie reads the
+  // final rendered position of both notes.
+  //
+  // A tie can only be one curve while both its notes are on the same system.
+  // Across a system break the two ends are metres apart on the page, and a
+  // single curve between them is drawn as a long diagonal rule straight
+  // across the score. Notation splits it instead: a stub trailing off the
+  // end of one system and another arriving at the start of the next, which
+  // is exactly what VexFlow draws when one end is left unset.
+  const rowOfUnit = (i) => Math.floor(units[i].measureIndex / measuresPerRow);
+  const drawTie = (firstNote, lastNote) => new VF.StaveTie({
+    first_note: firstNote,
+    last_note: lastNote,
+    first_indices: [0],
+    last_indices: [0],
+  }).setContext(ctx).draw();
+
   units.forEach((u, i) => {
-    if (u.tieToNext && i + 1 < staveNotes.length) {
-      new VF.StaveTie({
-        first_note: staveNotes[i],
-        last_note: staveNotes[i + 1],
-        first_indices: [0],
-        last_indices: [0],
-      }).setContext(ctx).draw();
+    if (!u.tieToNext || i + 1 >= staveNotes.length) return;
+    if (rowOfUnit(i) === rowOfUnit(i + 1)) {
+      drawTie(staveNotes[i], staveNotes[i + 1]);
+    } else {
+      drawTie(staveNotes[i], undefined);
+      drawTie(undefined, staveNotes[i + 1]);
     }
   });
 

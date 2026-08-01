@@ -15,10 +15,42 @@ document.addEventListener('DOMContentLoaded', () => {
   if (year) year.textContent = new Date().getFullYear();
 
   /* ── Running rule ──
-     The keyframe translates by -50%, so the track has to hold
-     exactly two copies of the list for the loop to be seamless. */
+     A marquee only reads as endless if two things hold: the strip is wider
+     than the window, and the animation shifts it by exactly one repeat.
+     Two copies satisfied neither on a desktop — the strip was narrower than
+     the screen, so it slid away and left the right-hand side empty until it
+     snapped back. So clone the group until it covers twice the viewport,
+     then hand CSS the measured width of one group as the shift distance.
+
+     Measuring has to wait for the webfonts: the group is sized by the words
+     inside it, and those change width when Plex Mono swaps in. */
   const track = $('#tickerTrack');
-  if (track) track.innerHTML += track.innerHTML;
+  const tickerGroup = track && $('.ticker__group', track);
+  if (tickerGroup) {
+    const PIXELS_PER_SECOND = 42;
+
+    const layoutTicker = () => {
+      const groupWidth = tickerGroup.getBoundingClientRect().width;
+      if (!groupWidth) return;
+
+      const copies = Math.max(2, Math.ceil((window.innerWidth * 2) / groupWidth) + 1);
+      while (track.children.length > copies) track.lastElementChild.remove();
+      while (track.children.length < copies) track.append(tickerGroup.cloneNode(true));
+
+      track.style.setProperty('--ticker-shift', `${groupWidth}px`);
+      track.style.setProperty('--ticker-duration', `${groupWidth / PIXELS_PER_SECOND}s`);
+      track.classList.add('is-live');
+    };
+
+    layoutTicker();
+    if (document.fonts?.ready) document.fonts.ready.then(layoutTicker);
+
+    let tickerTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(tickerTimer);
+      tickerTimer = setTimeout(layoutTicker, 150);
+    });
+  }
 
   /* ── Navigation drawer ── */
   const toggle = $('#navToggle');

@@ -155,7 +155,7 @@
   justify-self: start;
   font-family: var(--mono);
   font-size: var(--fs-12);
-  font-weight: 500;
+  font-weight: var(--w-mono);
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
@@ -201,7 +201,7 @@
 .capture .row { align-items: center; }
 .row__v--big {
   font-size: var(--fs-21);
-  font-weight: 500;
+  font-weight: var(--w-medium);
   letter-spacing: -0.02em;
 }
 
@@ -213,7 +213,7 @@
   border: none;
   font-family: var(--mono);
   font-size: var(--fs-21);
-  font-weight: 500;
+  font-weight: var(--w-mono);
   font-variant-numeric: tabular-nums;
   text-align: right;
   letter-spacing: -0.02em;
