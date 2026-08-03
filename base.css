@@ -332,6 +332,21 @@ input, select, textarea { font: inherit; color: inherit; }
 .btn--primary:hover { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 .btn--primary:disabled:hover { background: var(--blue); border-color: var(--blue-deep); color: #fff; }
 
+/* Same rule, shorter: for buttons riding inside another band of chrome —
+   the masthead, a library row — where a 40px control would set the height
+   of the thing containing it. */
+.btn--sm {
+  height: 30px;
+  padding: 0 var(--s3);
+  font-size: var(--fs-10);
+  letter-spacing: 0.1em;
+}
+
+/* Reserved for the one destructive action in the app. It stays outlined
+   until hover: a row of red buttons in a list is a dare, not a warning. */
+.btn--danger { border-color: var(--hair-2); color: var(--ink-2); }
+.btn--danger:hover { background: var(--vermillion); border-color: var(--vermillion); color: #fff; }
+
 .btn svg { flex-shrink: 0; }
 
 /* ──────────────────────────────────────────────────────────

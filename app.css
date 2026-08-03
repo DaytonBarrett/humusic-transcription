@@ -49,6 +49,13 @@
   flex-shrink: 0;
 }
 
+.masthead__right {
+  display: flex;
+  align-items: center;
+  gap: var(--s5);
+  flex-shrink: 0;
+}
+
 .masthead__meta {
   display: flex;
   align-items: stretch;
@@ -68,6 +75,18 @@
   font-variant-numeric: tabular-nums;
   margin-top: 1px;
 }
+
+/* The count is set as a tally on the button rather than as a badge floating
+   off its corner — this system has no floating anything. */
+.masthead__count {
+  padding-left: var(--s2);
+  margin-left: var(--s1);
+  border-left: 1px solid currentColor;
+  font-size: var(--fs-10);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.masthead__library.is-open { background: var(--ink); color: var(--paper); }
 
 /* ──────────────────────────────────────────────────────────
    GRID — deliberately unequal
@@ -121,6 +140,7 @@
   color: var(--ink-3);
   max-width: 34ch;
 }
+.col__note--wide { max-width: 62ch; }
 
 /* ──────────────────────────────────────────────────────────
    CAPTURE
@@ -374,12 +394,199 @@
 .score__paper svg text { fill: var(--ink); }
 .score__paper svg [stroke]:not([stroke='none']) { stroke: var(--ink); }
 
+/* ──────────────────────────────────────────────────────────
+   SELECTION
+   A band behind the staff, not a ring around a notehead: the
+   thing being revised is a slot in time, and its length is
+   the point of half the edits available.
+   ────────────────────────────────────────────────────────── */
+/* Scoped through .score__paper svg deliberately: the rule above paints every
+   rect in the engraving ink, to recolour VexFlow's noteheads and beams, and
+   these rects are in that SVG without being part of the engraving. They have
+   to outrank it, so they are written at the same depth. */
+.score__paper svg .score__band {
+  fill: transparent;
+  stroke: none;
+  transition: fill var(--t1) var(--ease);
+}
+.score__paper svg .score__band.is-selected {
+  fill: rgba(52, 120, 246, 0.15);
+  stroke: var(--blue);
+  stroke-width: 1;
+}
+.score__paper svg .score__target {
+  fill: transparent;
+  stroke: none;
+  cursor: pointer;
+}
+/* No hover wash on a touch screen, where there is no hover — only a sticky
+   highlight left behind the last tap. */
+@media (hover: hover) {
+  .score__paper svg .score__target:hover { fill: rgba(6, 18, 37, 0.05); }
+}
+
+/* ──────────────────────────────────────────────────────────
+   EDITOR
+   ────────────────────────────────────────────────────────── */
+.editor {
+  margin-top: var(--s4);
+  padding: var(--s4);
+}
+
+.editor__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  padding-bottom: var(--s3);
+  border-bottom: var(--rule);
+}
+.editor__head h3 { color: var(--ink); }
+.editor__where {
+  font-size: var(--fs-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--blue-deep);
+}
+.editor__close {
+  margin-left: auto;
+  color: var(--ink-3);
+  transition: color var(--t1) var(--ease);
+}
+.editor__close:hover { color: var(--ink); }
+
+.editor__rows { margin-top: var(--s3); }
+.editor .row { align-items: center; min-height: 46px; }
+
+/* Pitch stepper — a row of hard-ruled keys sharing their borders, so it
+   reads as one instrument part rather than four buttons. */
+.stepper {
+  display: flex;
+  align-items: stretch;
+  border: var(--rule-hair);
+}
+.step {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 var(--s2);
+  border-right: var(--rule-hair);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.step:last-child { border-right: none; }
+.step:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.step:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.stepper__value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  padding: 0 var(--s2);
+  border-right: var(--rule-hair);
+  background: var(--paper-hi);
+  font-size: var(--fs-15);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.stepper.is-rest .stepper__value { color: var(--ink-4); }
+
+/* Two-state control on the same rule as the stepper */
+.segmented { display: flex; border: var(--rule-hair); }
+.seg {
+  min-width: 58px;
+  height: 30px;
+  padding: 0 var(--s3);
+  border-right: var(--rule-hair);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.seg:last-child { border-right: none; }
+.seg:hover { background: var(--paper-2); }
+.seg[aria-pressed='true'] { background: var(--ink); color: var(--paper); }
+.seg[aria-pressed='true']:hover { background: var(--ink-2); }
+
+/* Length values — a keyboard of durations, shortest to longest */
+.editor__lengths { margin-top: var(--s4); }
+.editor__lengths-head { display: block; margin-bottom: var(--s2); }
+
+/* Ten columns for ten values, rather than auto-fit: a keyboard that always
+   ends flush has no half-empty last row, and the values stay in the same
+   place from one selection to the next, which is what lets you reach for
+   one without reading it. */
+.values {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0;
+  border: var(--rule-hair);
+}
+.value {
+  height: 38px;
+  border-right: var(--rule-hair);
+  border-bottom: var(--rule-hair);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.value:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.value.is-current { background: var(--blue-deep); color: #fff; }
+.value.is-current:hover { background: var(--blue-deep); color: #fff; }
+/* Not merely dim — a length that will not fit the beat is struck through,
+   because "unavailable here" is a different fact from "not selected". */
+.value:disabled {
+  color: var(--ink-4);
+  cursor: not-allowed;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.editor__note {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: var(--rule-hair);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 58ch;
+}
+
+/* ──────────────────────────────────────────────────────────
+   ACTIONS
+   Two sets — what the score sounds like, then what becomes of
+   it — divided by a rule and run together from the left rather
+   than pushed to opposite edges. The blue field claims the
+   right 38% of the page, and a set parked against that edge
+   puts the one solid blue button in the app on top of it.
+   ────────────────────────────────────────────────────────── */
 .actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--s3) var(--s5);
   margin-top: var(--s4);
+}
+
+.actions__set {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3);
+}
+.actions__set + .actions__set {
+  padding-left: var(--s5);
+  border-left: var(--rule-hair);
 }
 
 /* ──────────────────────────────────────────────────────────
@@ -433,6 +640,156 @@
 .picker__select:focus { outline: none; }
 .picker:has(.picker__select:disabled) { opacity: 0.35; }
 .picker__select:disabled { cursor: not-allowed; }
+
+/* The tempo the score is read at, which is not the tempo it was played to —
+   so it is a field on the score's own rail, beside the clef, and not the
+   capture column's BPM. */
+.picker--field { padding-right: var(--s4); gap: var(--s3); }
+.picker__input {
+  width: 3.6ch;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: var(--mono);
+  font-size: var(--fs-13);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.picker__input::-webkit-outer-spin-button,
+.picker__input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.picker__input:focus { outline: none; color: var(--blue-deep); }
+.picker__unit {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--ink-3);
+  margin-left: -6px;
+}
+.picker:has(.picker__input:disabled) { opacity: 0.35; }
+.picker__input:disabled { cursor: not-allowed; }
+
+/* ──────────────────────────────────────────────────────────
+   LIBRARY
+   A publisher's catalogue: numbered entries on ruled lines,
+   not a grid of cards.
+   ────────────────────────────────────────────────────────── */
+.library {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(var(--s10) + var(--sa-t)) var(--s6) calc(var(--s10) + var(--sa-b));
+}
+
+.library__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 18, 37, 0.34);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: fade var(--t2) var(--ease);
+}
+@keyframes fade { from { opacity: 0; } }
+
+.library__sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  max-height: 100%;
+  padding: var(--s6);
+  overflow: hidden;
+  animation: lift var(--t2) var(--ease);
+}
+@keyframes lift { from { opacity: 0; transform: translateY(8px); } }
+
+.library__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s5);
+  padding-bottom: var(--s4);
+  border-bottom: var(--rule);
+}
+.library__title {
+  font-size: var(--fs-40);
+  color: var(--ink);
+}
+.library__title em { font-style: italic; color: var(--blue-deep); }
+.library__sub { margin-top: var(--s2); color: var(--ink-3); }
+
+.library__list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--s6) * -1);
+  padding: 0 var(--s6);
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4) 0;
+  border-bottom: var(--rule-hair);
+}
+.entry__seq {
+  min-width: 2.2ch;
+  color: var(--ink-4);
+  font-style: italic;
+  font-size: var(--fs-17);
+  text-align: right;
+  flex-shrink: 0;
+}
+.entry__body { flex: 1; min-width: 0; }
+
+/* The title is editable in place. It has to look like the text it replaces
+   until it is touched, or the catalogue reads as a form. */
+.entry__title {
+  display: block;
+  width: 100%;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid transparent;
+  font-family: var(--display);
+  font-size: var(--fs-17);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.entry__title:hover { border-bottom-color: var(--hair); }
+.entry__title:focus {
+  outline: none;
+  border-bottom-color: var(--blue);
+  color: var(--blue-deep);
+}
+.entry__meta {
+  margin-top: 3px;
+  color: var(--ink-3);
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry__actions {
+  display: flex;
+  gap: var(--s2);
+  flex-shrink: 0;
+}
+.entry.is-current { background: rgba(52, 120, 246, 0.06); }
+.entry.is-current .entry__seq { color: var(--blue-deep); }
+
+.library__empty {
+  padding: var(--s8) 0 var(--s4);
+  font-size: var(--fs-13);
+  line-height: 1.65;
+  color: var(--ink-2);
+  max-width: 52ch;
+}
 
 /* ──────────────────────────────────────────────────────────
    COLOPHON
@@ -496,15 +853,33 @@
   .col--score   { padding-left: 0; }
   .backdrop__field { width: 100%; height: 34%; top: auto; border-left: none; border-top: var(--rule); }
   .score { min-height: 320px; }
+  /* Once the sets stack, a rule down the left of the second one is a rule
+     pointing at nothing. */
+  .actions__set + .actions__set { padding-left: 0; border-left: none; }
+  .library { padding: var(--s5) var(--s5) calc(var(--s5) + var(--sa-b)); padding-top: calc(var(--s5) + var(--sa-t)); }
+  .library__sheet { padding: var(--s5); }
+  .library__list { margin-inline: calc(var(--s5) * -1); padding-inline: var(--s5); }
 }
 
 @media (max-width: 560px) {
   .masthead { padding-inline: var(--s4); flex-wrap: wrap; gap: var(--s3); }
   .masthead__brand .wordmark { font-size: var(--fs-17); }
+  .masthead__right { width: 100%; justify-content: space-between; gap: var(--s3); }
   .masthead__meta .cell { min-width: 0; padding: 0 var(--s3); }
   .masthead__meta .cell:first-child { padding-left: 0; border-left: none; }
   .console__grid { padding-inline: var(--s4); }
   .colophon .label { padding: var(--s3) var(--s4); }
   .colophon .label:last-child { margin-left: 0; }
   .score__empty { padding: var(--s5) 0 var(--s2); }
+
+  /* The catalogue stops being a table and becomes a stack: the row actions
+     drop under the title rather than squeezing it to nothing. */
+  .library__title { font-size: var(--fs-28); }
+  .entry { flex-wrap: wrap; }
+  .entry__seq { font-size: var(--fs-15); }
+  .entry__actions { width: 100%; padding-left: calc(2.2ch + var(--s4)); }
+  /* The date is how an unnamed take is found again, so it wraps here rather
+     than being the thing the ellipsis eats. */
+  .entry__meta { white-space: normal; }
+  .values { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }

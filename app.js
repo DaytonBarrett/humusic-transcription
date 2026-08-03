@@ -963,6 +963,108 @@ function resolveClef(runs, mode) {
   return CLEFS.treble;
 }
 
+/* Reads back the grid a run list already sits on, rather than fitting one to
+   it. Everything downstream of `quantizeRuns` — a reloaded score, an edited
+   one — has boundaries that are already exactly on a grid, and re-running the
+   measurement-era fit on them is not harmless: the fit is a judgement made
+   from noisy onsets, and re-applying it to exact data can pull a boundary onto
+   the other grid and silently change a length that was already correct.
+
+   Exact, therefore, and not a fit: a beat divides in three when a boundary
+   inside it does not land on the straight grid. A beat nothing divides is
+   straight, which is also what `classifyBeats` says about it, and lets the
+   engraver merge it into the span beside it. */
+function classifyGriddedBeats(runs) {
+  const totalUnits = runs.reduce((sum, run) => sum + run.units, 0);
+  const beatCount = Math.max(1, Math.ceil(totalUnits / UNITS_PER_BEAT));
+  const isTriplet = new Array(beatCount).fill(false);
+
+  let at = 0;
+  for (const run of runs) {
+    at += run.units;
+    const offset = at % UNITS_PER_BEAT;
+    if (offset === 0) continue; // a downbeat divides nothing
+    const beat = Math.floor(at / UNITS_PER_BEAT);
+    if (beat < beatCount && !BINARY_OFFSETS.includes(offset)) isTriplet[beat] = true;
+  }
+
+  return isTriplet;
+}
+
+/* Whether a run list can be written down at all. Every boundary has to sit on
+   its beat's grid, and a beat may not mix the two grids: three in the time of
+   two is a bracket over the whole beat, so a beat carrying both a sixteenth
+   boundary and a triplet one is not a thing common notation can express. The
+   editor uses this to decide which lengths it is willing to offer — an option
+   that cannot be engraved is disabled rather than accepted and then lost. */
+function isEngravable(runs) {
+  if (!runs.length) return false;
+  const isTriplet = classifyGriddedBeats(runs);
+  let at = 0;
+  for (const run of runs) {
+    if (!Number.isInteger(run.units) || run.units <= 0) return false;
+    at += run.units;
+    const offset = at % UNITS_PER_BEAT;
+    if (offset === 0) continue;
+    const allowed = isTriplet[Math.floor(at / UNITS_PER_BEAT)] ? TRIPLET_OFFSETS : BINARY_OFFSETS;
+    if (!allowed.includes(offset)) return false;
+  }
+  return true;
+}
+
+/* The one place a take is fitted to the grid. Run once, on what the tracker
+   measured; everything after this point — engraving, export, playback,
+   editing, saving — works from the result and never re-fits it. */
+function quantizeRuns(runs) {
+  // Bar 1 beat 1 is the first note played. The silence around the take only
+  // records how long it took to start after pressing Record and how long it
+  // took to reach Stop; writing it as rests would push the whole line off
+  // the beat it was played on and hang empty bars off the end.
+  let first = 0;
+  while (first < runs.length && runs[first].note === REST) first++;
+  let last = runs.length;
+  while (last > first && runs[last - 1].note === REST) last--;
+  const played = runs.slice(first, last);
+  if (!played.length) return null;
+
+  // Quantizing happens here rather than during analysis because it depends on
+  // where beat one is, and beat one is the first note played — which is only
+  // known once the leading silence has been trimmed.
+  const snapped = mergeRests(snapRunsToGrid(played, classifyBeats(played))
+    .map(({ note, units }) => ({ note, units })));
+
+  // Snapping can drop a run outright — a sliver between two onsets that land
+  // in the same place — and dropping the first or last of them exposes a rest
+  // the trim above had already dealt with. So it is dealt with again, but
+  // differently: nothing here may move a boundary that has just been placed
+  // on the grid. A trailing rest can simply go, since the end of the score is
+  // not a boundary anything follows. A leading one is given to the note after
+  // it instead of removed, which starts the score on that note without
+  // shifting one thing behind it off the beat it was snapped to.
+  while (snapped.length && snapped[snapped.length - 1].note === REST) snapped.pop();
+  if (snapped.length > 1 && snapped[0].note === REST) {
+    snapped[1].units += snapped[0].units;
+    snapped.shift();
+  }
+  if (!snapped.length || snapped[0].note === REST) return null;
+
+  return snapped;
+}
+
+// Two rests in a row are one rest. They arrive that way from an edit — a
+// silenced note beside an existing gap — and left apart they are engraved as
+// two rests where a copyist would write one.
+function mergeRests(runs) {
+  const merged = [];
+  for (const run of runs) {
+    if (run.units <= 0) continue;
+    const last = merged[merged.length - 1];
+    if (last && last.note === REST && run.note === REST) last.units += run.units;
+    else merged.push({ ...run });
+  }
+  return merged;
+}
+
 /* ══════════════════════════════════════════════════════════
    ENGRAVING MODEL
    Turns the tracker's runs into correctly tied, barred
@@ -1044,14 +1146,16 @@ function buildEngravingUnits(runs, isTriplet) {
   // strict mode and throws IncompleteVoice on any measure that doesn't total
   // four beats, and MusicXML importers expect full measures too.
   const shortfall = (UNITS_PER_MEASURE - (played % UNITS_PER_MEASURE)) % UNITS_PER_MEASURE;
-  const events = shortfall ? [...runs, { note: REST, units: shortfall }] : runs;
+  // The filler carries no run index: it is not something that was played, so
+  // it is not something the editor lets you select or change.
+  const events = shortfall ? [...runs, { note: REST, units: shortfall, pad: true }] : runs;
 
   const spans = buildSpans(played + shortfall, isTriplet);
   const units = [];
   let position = 0;
   let spanIndex = 0;
 
-  for (const run of events) {
+  for (const [runIndex, run] of events.entries()) {
     let remaining = run.units;
     while (remaining > 0) {
       while (spanIndex < spans.length - 1 && position >= spans[spanIndex].end) spanIndex++;
@@ -1076,6 +1180,7 @@ function buildEngravingUnits(runs, isTriplet) {
           vfDur,
           tieToNext,
           tupletId,
+          runIndex: run.pad ? null : runIndex,
         });
       });
 
@@ -1087,25 +1192,14 @@ function buildEngravingUnits(runs, isTriplet) {
   return units;
 }
 
+/* Builds the engraving model from runs that are already on the grid — which
+   is everything the console holds, since `quantizeRuns` runs the moment a take
+   is analysed and nothing afterwards moves a boundary off it. */
 function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE) {
-  // Bar 1 beat 1 is the first note played. The silence around the take only
-  // records how long it took to start after pressing Record and how long it
-  // took to reach Stop; writing it as rests would push the whole line off
-  // the beat it was played on and hang empty bars off the end.
-  let first = 0;
-  while (first < runs.length && runs[first].note === REST) first++;
-  let last = runs.length;
-  while (last > first && runs[last - 1].note === REST) last--;
-  const played = runs.slice(first, last);
-  if (!played.length) return null;
+  if (!runs?.length) return null;
+  const isTriplet = classifyGriddedBeats(runs);
 
-  // Quantizing happens here rather than during analysis because it depends on
-  // where beat one is, and beat one is the first note played — which is only
-  // known once the leading silence has been trimmed.
-  const isTriplet = classifyBeats(played);
-  const snapped = snapRunsToGrid(played, isTriplet);
-
-  const units = buildEngravingUnits(snapped, isTriplet);
+  const units = buildEngravingUnits(runs, isTriplet);
   if (!units.length) return null;
   const numMeasures = units[units.length - 1].measureIndex + 1;
   const groups = Array.from({ length: numMeasures }, () => []);
@@ -1114,8 +1208,8 @@ function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE) {
     units,
     numMeasures,
     groups,
-    clef: resolveClef(snapped, clefMode),
-    runs: snapped,
+    clef: resolveClef(runs, clefMode),
+    runs,
     hasTriplets: isTriplet.some(Boolean),
   };
 }
@@ -1123,6 +1217,150 @@ function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE) {
 function noteNameToVexKey(name) {
   const m = /^([A-G]#?)(-?\d+)$/.exec(name);
   return `${m[1].toLowerCase()}/${m[2]}`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   REVISION
+   Post-transcription editing. A detector is not a copyist —
+   it mishears an octave, splits a held note on a bow change,
+   writes a sixteenth where a triplet was played — so the score
+   it produces is a first draft, and this is the pencil.
+
+   Every operation returns a new run list rather than mutating
+   the old one, which is what makes undo a stack of references
+   instead of a diff.
+
+   The governing rule is that a length change never moves what
+   comes after it. Rippling would be simpler to write and worse
+   to use: in strict 4/4 it drags every later note off the beat
+   it was played on, and re-fitting the whole line to the grid
+   afterwards is exactly the guesswork the edit was correcting.
+   So lengthening takes its time from what follows and
+   shortening gives the time back as a rest — the bar lines
+   hold still, and one edit stays one edit.
+══════════════════════════════════════════════════════════ */
+
+// Every value the grid can express, shortest first. Triplet values sit in
+// sequence rather than behind a modifier: a triplet eighth is a length like
+// any other here, and which of them are legal at a given point in the bar is
+// decided by the music, not by a toggle the reader has to find.
+const NOTE_VALUES = [
+  { units: 3,  label: '1/16', name: 'Sixteenth' },
+  { units: 4,  label: '1/8³', name: 'Triplet eighth' },
+  { units: 6,  label: '1/8',  name: 'Eighth' },
+  { units: 8,  label: '1/4³', name: 'Triplet quarter' },
+  { units: 9,  label: '1/8·', name: 'Dotted eighth' },
+  { units: 12, label: '1/4',  name: 'Quarter' },
+  { units: 18, label: '1/4·', name: 'Dotted quarter' },
+  { units: 24, label: '1/2',  name: 'Half' },
+  { units: 36, label: '1/2·', name: 'Dotted half' },
+  { units: 48, label: '1/1',  name: 'Whole' },
+];
+
+// The piano, rather than the detector's range. YIN is bounded by what it can
+// hear reliably; a correction is bounded by what can be written down, and the
+// octave slips worth correcting are precisely the ones at the edges.
+const EDIT_MIN_MIDI = 21;  // A0
+const EDIT_MAX_MIDI = 108; // C8
+
+function runStartUnits(runs, index) {
+  let at = 0;
+  for (let i = 0; i < index; i++) at += runs[i].units;
+  return at;
+}
+
+/* Where a run falls, in the terms the score is read in. */
+function runPosition(runs, index) {
+  const at = runStartUnits(runs, index);
+  return {
+    bar: Math.floor(at / UNITS_PER_MEASURE) + 1,
+    beat: Math.floor((at % UNITS_PER_MEASURE) / UNITS_PER_BEAT) + 1,
+  };
+}
+
+function setRunUnits(runs, index, units) {
+  const delta = units - runs[index].units;
+  // Same convention as the other two: an edit that changes nothing hands back
+  // the list it was given, so callers can tell "no change" by identity and a
+  // press on the length a note already has does not cost an undo step.
+  if (delta === 0) return runs;
+
+  const next = runs.map((run) => ({ ...run }));
+  next[index].units = units;
+
+  if (delta < 0) {
+    // The time given back is a rest in the same place, so nothing after it
+    // moves. Shortening a rest is therefore a no-op — the time it gives up
+    // becomes rest again and merges straight back in — which is why the
+    // editor refuses to offer it rather than appearing not to work.
+    next.splice(index + 1, 0, { note: REST, units: -delta });
+  } else {
+    // Taken from whatever follows, nearest first — a rest is consumed before a
+    // note is, because a rest is where the room usually is. Running out means
+    // the note was the last thing on the page, and there the score simply
+    // gets longer.
+    let owed = delta;
+    let i = index + 1;
+    while (owed > 0 && i < next.length) {
+      const take = Math.min(owed, next[i].units);
+      next[i].units -= take;
+      owed -= take;
+      if (next[i].units === 0) next.splice(i, 1);
+      else i++;
+    }
+  }
+
+  return mergeRests(next);
+}
+
+function runsEqual(a, b) {
+  return a.length === b.length
+    && a.every((run, i) => run.note === b[i].note && run.units === b[i].units);
+}
+
+/* The lengths that can be written at this point in the bar. Two are refused.
+   One that does not fit — a triplet eighth in a beat already divided into
+   sixteenths — would produce a bar that does not add up. And one that would
+   change nothing: shortening a rest is the clearest case, since the time it
+   gives up immediately becomes rest again, so the value is a button that
+   silently does not work unless it is shown as unavailable. */
+function availableNoteValues(runs, index) {
+  return NOTE_VALUES.map((value) => {
+    const current = runs[index].units === value.units;
+    if (current) return { ...value, current, allowed: true };
+    const next = setRunUnits(runs, index, value.units);
+    return { ...value, current, allowed: !runsEqual(next, runs) && isEngravable(next) };
+  });
+}
+
+function transposeRun(runs, index, semitones) {
+  const run = runs[index];
+  if (run.note === REST) return runs;
+  const midi = noteToMidi(run.note) + semitones;
+  if (midi < EDIT_MIN_MIDI || midi > EDIT_MAX_MIDI) return runs;
+  return runs.map((r, i) => (i === index ? { ...r, note: midiToNoteName(midi) } : { ...r }));
+}
+
+/* A rest becoming a note has to become some pitch, and the least surprising
+   one is the pitch already sounding around it — restoring a note the detector
+   dropped mid-phrase should not land an octave away from the phrase. */
+function setRunRest(runs, index, rest) {
+  const run = runs[index];
+  if ((run.note === REST) === rest) return runs;
+
+  let note = REST;
+  if (!rest) {
+    let pitched = null;
+    for (let d = 1; d < runs.length && !pitched; d++) {
+      const before = runs[index - d];
+      const after = runs[index + d];
+      if (before && before.note !== REST) pitched = before.note;
+      else if (after && after.note !== REST) pitched = after.note;
+    }
+    note = pitched || 'C4';
+  }
+
+  return mergeRests(runs.map((r, i) => (i === index ? { ...r, note } : { ...r })));
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1326,6 +1564,104 @@ function timestampSlug() {
 }
 
 /* ══════════════════════════════════════════════════════════
+   THE LIBRARY
+   Scores kept on the device, in localStorage.
+
+   What is stored is the run list — note names and lengths in
+   grid units — and not the audio. That is the whole recording
+   in a few hundred bytes instead of a few megabytes, it
+   survives being reopened at a different tempo, and it means
+   the library holds no recording of anyone: the privacy label
+   this app ships with says no data is collected, and storing
+   the take itself would be the first thing to make that untrue.
+
+   localStorage rather than the filesystem because it is the
+   one store that behaves identically in a browser, opened from
+   disk, and inside WKWebView — and a library that exists in
+   the app but not on the web page it was written on is worse
+   than no library.
+══════════════════════════════════════════════════════════ */
+const LIBRARY_KEY = 'humusic.library.v1';
+
+const Library = {
+  all() {
+    let raw = null;
+    try { raw = window.localStorage?.getItem(LIBRARY_KEY); }
+    catch (err) { return []; } // private mode, or storage disabled
+
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      // Newest first, and defensively: a record hand-edited or written by an
+      // older build should be skipped, not allowed to break the whole list.
+      return parsed.filter(Library.isValid).sort((a, b) => b.updatedAt - a.updatedAt);
+    } catch (err) {
+      return [];
+    }
+  },
+
+  isValid(record) {
+    return !!record
+      && typeof record.id === 'string'
+      && Array.isArray(record.runs)
+      && record.runs.length > 0
+      && record.runs.every((r) => typeof r?.note === 'string' && Number.isInteger(r?.units) && r.units > 0);
+  },
+
+  get(id) {
+    return Library.all().find((record) => record.id === id) || null;
+  },
+
+  // Returns the stored record, or throws if the device has no room for it.
+  put(record) {
+    const now = Date.now();
+    const stored = {
+      id: record.id || `sc-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      title: String(record.title || 'Untitled').slice(0, 80),
+      createdAt: record.createdAt || now,
+      updatedAt: now,
+      bpm: record.bpm,
+      clefMode: record.clefMode,
+      voice: record.voice,
+      runs: record.runs.map(({ note, units }) => ({ note, units })),
+    };
+
+    const rest = Library.all().filter((entry) => entry.id !== stored.id);
+    Library._write([stored, ...rest]);
+    return stored;
+  },
+
+  remove(id) {
+    Library._write(Library.all().filter((record) => record.id !== id));
+  },
+
+  _write(records) {
+    window.localStorage.setItem(LIBRARY_KEY, JSON.stringify(records));
+  },
+};
+
+/* Scores are named for when they were made, because that is the only thing
+   known about one at the moment it is saved. The name is editable in the
+   library, and the date is what makes an unedited one findable. */
+function defaultScoreTitle(date = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `Take ${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}`;
+}
+
+function formatSavedAt(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* A filename safe on every platform the share sheet can reach. */
+function slugifyTitle(title) {
+  const slug = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug.slice(0, 48) || 'score';
+}
+
+/* ══════════════════════════════════════════════════════════
    ENGRAVING — VexFlow
 ══════════════════════════════════════════════════════════ */
 function renderScore(runs, container, options = {}) {
@@ -1403,7 +1739,7 @@ function renderScore(runs, container, options = {}) {
     const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(true);
     voice.addTickables(notesForMeasure);
 
-    measures.push({ stave, voice, notes: notesForMeasure, tuplets });
+    measures.push({ stave, voice, notes: notesForMeasure, tuplets, unitIndices: groups[m] });
   }
 
   // applyAccidentals reads one voice as one measure, which is exactly how the
@@ -1456,12 +1792,96 @@ function renderScore(runs, container, options = {}) {
     }
   });
 
+  if (options.onSelect || options.selected != null) {
+    layerSelection(container, { units, measures, measureWidth }, options);
+  }
+
   return {
     numMeasures,
     noteCount: units.filter((u) => u.note !== REST).length,
     clef: clef.label,
     hasTriplets: model.hasTriplets,
   };
+}
+
+/* ══════════════════════════════════════════════════════════
+   SELECTION LAYER
+   Notation is drawn to be read, not to be hit: a sixteenth
+   rest is a five-pixel squiggle, and on a phone nobody is
+   landing a fingertip on one. So the note glyphs are left
+   exactly as engraved and the target is drawn separately —
+   a column the full height of the staff, running from each
+   note to the next, the way a conductor points at a beat
+   rather than at a notehead.
+
+   The bands go in behind the engraving and the transparent
+   targets in front of it, which is why they are appended to
+   the SVG rather than drawn through VexFlow's context: the
+   marks have to sit either side of everything it drew.
+══════════════════════════════════════════════════════════ */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function layerSelection(container, { units, measures, measureWidth }, options) {
+  const svg = container.querySelector('svg');
+  if (!svg) return;
+
+  const bands = document.createElementNS(SVG_NS, 'g');
+  bands.setAttribute('class', 'score__bands');
+  const targets = document.createElementNS(SVG_NS, 'g');
+  targets.setAttribute('class', 'score__targets');
+
+  for (const { stave, notes, unitIndices } of measures) {
+    // Generous, and vertically uniform: a band that hugged each notehead
+    // would jitter up and down the staff as the melody moves, which reads as
+    // noise rather than as a row of slots.
+    const top = stave.getYForLine(0) - 26;
+    const height = (stave.getYForLine(4) + 26) - top;
+    const measureEnd = stave.getX() + measureWidth;
+
+    notes.forEach((note, i) => {
+      const runIndex = units[unitIndices[i]]?.runIndex;
+      if (runIndex == null) return; // bar filler — not something that was played
+
+      let x;
+      let right;
+      try {
+        x = note.getAbsoluteX() - 9;
+        right = i + 1 < notes.length ? notes[i + 1].getAbsoluteX() - 9 : measureEnd - 4;
+      } catch (err) {
+        return; // a note that never formatted has no position to point at
+      }
+      const width = Math.max(12, right - x);
+
+      const band = document.createElementNS(SVG_NS, 'rect');
+      band.setAttribute('class', 'score__band');
+      band.setAttribute('x', x);
+      band.setAttribute('y', top);
+      band.setAttribute('width', width);
+      band.setAttribute('height', height);
+      band.dataset.run = runIndex;
+      if (runIndex === options.selected) band.classList.add('is-selected');
+      bands.appendChild(band);
+
+      if (!options.onSelect) return;
+      const target = document.createElementNS(SVG_NS, 'rect');
+      target.setAttribute('class', 'score__target');
+      target.setAttribute('x', x);
+      target.setAttribute('y', top);
+      target.setAttribute('width', width);
+      target.setAttribute('height', height);
+      target.dataset.run = runIndex;
+      targets.appendChild(target);
+    });
+  }
+
+  svg.insertBefore(bands, svg.firstChild);
+  svg.appendChild(targets);
+
+  if (!options.onSelect) return;
+  targets.addEventListener('pointerdown', (event) => {
+    const run = event.target?.dataset?.run;
+    if (run != null) options.onSelect(Number(run));
+  });
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -2003,13 +2423,34 @@ document.addEventListener('DOMContentLoaded', () => {
   const scoreContainer = $('#scoreContainer');
   const exportBtn   = $('#exportBtn');
   const clearBtn    = $('#clearBtn');
+  const saveBtn     = $('#saveBtn');
+  const saveLabel   = $('#saveLabel');
+  const undoBtn     = $('#undoBtn');
   const playBtn     = $('#playBtn');
   const playLabel   = $('#playLabel');
   const voiceSelect = $('#voiceSelect');
   const clefSelect  = $('#clefSelect');
+  const scoreTempo  = $('#scoreTempo');
   const metronomeToggle = $('#metronomeToggle');
   const metronomeState  = $('#metronomeState');
   const toast       = $('#toast');
+
+  const editorPanel = $('#editorPanel');
+  const editorWhere = $('#editorWhere');
+  const editorPitch = $('#editorPitch');
+  const editorValues = $('#editorValues');
+  const editorClose = $('#editorClose');
+  const asNote      = $('#asNote');
+  const asRest      = $('#asRest');
+
+  const library      = $('#library');
+  const libraryBtn   = $('#libraryBtn');
+  const libraryClose = $('#libraryClose');
+  const libraryScrim = $('#libraryScrim');
+  const libraryList  = $('#libraryList');
+  const libraryEmpty = $('#libraryEmpty');
+  const librarySub   = $('#librarySub');
+  const libraryCount = $('#libraryCount');
 
   // Links back to the marketing site are meaningless inside the app
   // shell, where this page is the whole bundle.
@@ -2027,13 +2468,6 @@ document.addEventListener('DOMContentLoaded', () => {
     toastTimer = setTimeout(() => toast.classList.remove('is-open'), 4200);
   };
 
-  if (!navigator.mediaDevices?.getUserMedia) {
-    recordBtn.disabled = true;
-    recordLabel.textContent = 'Unavailable';
-    showToast('Microphone capture is not supported in this browser.', 'error');
-    return;
-  }
-
   const formatTime = (s) => {
     const m = Math.floor(s / 60).toString().padStart(2, '0');
     const sec = Math.floor(s % 60).toString().padStart(2, '0');
@@ -2045,8 +2479,25 @@ document.addEventListener('DOMContentLoaded', () => {
     return Math.min(240, Math.max(40, n));
   };
 
+  /* ══════════════════════════════════════════════════════
+     SCORE STATE
+     One object is the whole score: the runs, the tempo it is
+     read at, and which library record it belongs to. Every
+     view of it — the staff, the meta line, playback, the
+     export, the save button — is redrawn from here by
+     `refresh`, so there is nowhere for two of them to
+     disagree about what is on the page.
+  ══════════════════════════════════════════════════════ */
+  let score = null;      // { runs, bpm, seconds, id, title, saved }
+  let selected = null;   // index into score.runs, or null
+  let history = [];      // run lists, newest last — the undo stack
+
+  const MAX_HISTORY = 40;
+
+  function hasScore() { return !!score?.runs?.length; }
+
+  /* ── Capture ── */
   let recorder = null;
-  let lastResult = null;
 
   function setIdle() {
     recordBtn.classList.remove('is-recording');
@@ -2060,51 +2511,57 @@ document.addEventListener('DOMContentLoaded', () => {
     updateTuner(null);
   }
 
-  setIdle();
+  if (!navigator.mediaDevices?.getUserMedia) {
+    recordBtn.disabled = true;
+    recordLabel.textContent = 'Unavailable';
+    showToast('Microphone capture is not supported in this browser.', 'error');
+  } else {
+    setIdle();
 
-  recordBtn.addEventListener('click', async () => {
-    if (recorder?.recording) {
-      const captured = recorder.stop();
-      setIdle();
-      metaState.textContent = 'ANALYSING';
-      recordLabel.textContent = 'Working';
-      // Yield a frame so the state paints before the synchronous
-      // analysis + engraving work blocks the main thread.
-      await new Promise(requestAnimationFrame);
-      runTranscription(captured);
-      recordLabel.textContent = 'Record';
-      return;
-    }
+    recordBtn.addEventListener('click', async () => {
+      if (recorder?.recording) {
+        const captured = recorder.stop();
+        setIdle();
+        metaState.textContent = 'ANALYSING';
+        recordLabel.textContent = 'Working';
+        // Yield a frame so the state paints before the synchronous
+        // analysis + engraving work blocks the main thread.
+        await new Promise(requestAnimationFrame);
+        runTranscription(captured);
+        recordLabel.textContent = 'Record';
+        return;
+      }
 
-    bpmInput.value = clampBpm(bpmInput.value);
-    // The mic is about to open; anything still sounding would be recorded.
-    player.stop();
+      bpmInput.value = clampBpm(bpmInput.value);
+      // The mic is about to open; anything still sounding would be recorded.
+      player.stop();
 
-    try {
-      recorder = new Recorder({
-        onLevel: (lvl) => { levelFill.style.clipPath = `inset(0 ${(1 - lvl) * 100}% 0 0)`; },
-        onTuner: updateTuner,
-        onTick: (t) => { timerText.textContent = formatTime(t); },
-        onAutoStop: () => recordBtn.click(),
-        bpm: clampBpm(bpmInput.value),
-        useMetronome: metronomeToggle.checked,
-      });
-      await recorder.start();
-      recordBtn.classList.add('is-recording');
-      recordBtn.setAttribute('aria-label', 'Stop recording');
-      recordLabel.textContent = 'Stop';
-      metaState.textContent = 'RECORDING';
-      metaRate.textContent = `${(recorder.sampleRate / 1000).toFixed(1)}kHz`;
-      centsTrack.classList.add('is-live');
-      bpmInput.disabled = true;
-      metronomeToggle.disabled = true;
-    } catch (err) {
-      console.error(err);
-      recorder = null;
-      setIdle();
-      showToast('Microphone access was blocked. Allow it and try again.', 'error');
-    }
-  });
+      try {
+        recorder = new Recorder({
+          onLevel: (lvl) => { levelFill.style.clipPath = `inset(0 ${(1 - lvl) * 100}% 0 0)`; },
+          onTuner: updateTuner,
+          onTick: (t) => { timerText.textContent = formatTime(t); },
+          onAutoStop: () => recordBtn.click(),
+          bpm: clampBpm(bpmInput.value),
+          useMetronome: metronomeToggle.checked,
+        });
+        await recorder.start();
+        recordBtn.classList.add('is-recording');
+        recordBtn.setAttribute('aria-label', 'Stop recording');
+        recordLabel.textContent = 'Stop';
+        metaState.textContent = 'RECORDING';
+        metaRate.textContent = `${(recorder.sampleRate / 1000).toFixed(1)}kHz`;
+        centsTrack.classList.add('is-live');
+        bpmInput.disabled = true;
+        metronomeToggle.disabled = true;
+      } catch (err) {
+        console.error(err);
+        recorder = null;
+        setIdle();
+        showToast('Microphone access was blocked. Allow it and try again.', 'error');
+      }
+    });
+  }
 
   function updateTuner(result) {
     if (!result) {
@@ -2133,9 +2590,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const bpm = clampBpm(bpmInput.value);
 
     try {
-      const runs = analyzeRecording(captured.samples, captured.sampleRate, bpm);
+      const runs = quantizeRuns(analyzeRecording(captured.samples, captured.sampleRate, bpm));
 
-      if (runs.length === 0) {
+      if (!runs || !runs.length) {
         showToast('Too short to quantize at this tempo. Record longer, or raise the BPM.', 'error');
         return;
       }
@@ -2144,38 +2601,198 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      lastResult = { runs, bpm, seconds: captured.samples.length / captured.sampleRate };
-
-      scoreEmpty.hidden = true;
-      scoreContainer.hidden = false;
-      const info = renderScore(runs, scoreContainer, { clefMode: clefSelect.value });
-
-      const parts = [
-        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'}`,
-        `${info.noteCount} events`,
-      ];
-      if (info.hasTriplets) parts.push('triplets');
-      parts.push(info.clef, `${bpm} bpm`, `${lastResult.seconds.toFixed(1)}s`);
-      scoreMeta.textContent = parts.join(' · ');
-
-      setPlaybackEnabled(true);
-      exportBtn.disabled = false;
-      clearBtn.disabled = false;
+      loadScore({
+        runs,
+        bpm,
+        seconds: captured.samples.length / captured.sampleRate,
+        title: defaultScoreTitle(),
+      });
     } catch (err) {
       console.error('Transcription failed:', err);
-      lastResult = null;
-      scoreContainer.hidden = true;
-      scoreEmpty.hidden = false;
-      setPlaybackEnabled(false);
-      exportBtn.disabled = true;
-      clearBtn.disabled = true;
+      clearScore();
       showToast('Something went wrong transcribing that take. Try again.', 'error');
     } finally {
       metaState.textContent = 'IDLE';
     }
   }
 
-  /* ── Playback ── */
+  /* ══════════════════════════════════════════════════════
+     RENDERING THE SCORE
+  ══════════════════════════════════════════════════════ */
+  function loadScore(next) {
+    score = { id: null, saved: false, ...next };
+    selected = null;
+    history = [];
+    scoreTempo.value = score.bpm;
+    refresh();
+  }
+
+  function clearScore() {
+    score = null;
+    selected = null;
+    history = [];
+    player.stop();
+    scoreContainer.innerHTML = '';
+    scoreContainer.hidden = true;
+    scoreEmpty.hidden = false;
+    scoreMeta.textContent = '';
+    refreshControls();
+    refreshEditor();
+  }
+
+  function refresh() {
+    if (!hasScore()) { clearScore(); return; }
+
+    scoreEmpty.hidden = true;
+    scoreContainer.hidden = false;
+
+    let info;
+    try {
+      info = renderScore(score.runs, scoreContainer, {
+        clefMode: clefSelect.value,
+        selected,
+        onSelect: select,
+      });
+    } catch (err) {
+      console.error('Engraving failed:', err);
+      showToast('That score could not be engraved.', 'error');
+      info = null;
+    }
+
+    if (info) {
+      const parts = [
+        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'}`,
+        `${info.noteCount} events`,
+      ];
+      if (info.hasTriplets) parts.push('triplets');
+      parts.push(info.clef, `${score.bpm} bpm`);
+      if (score.seconds != null) parts.push(`${score.seconds.toFixed(1)}s`);
+      scoreMeta.textContent = parts.join(' · ');
+    }
+
+    refreshControls();
+    refreshEditor();
+  }
+
+  function refreshControls() {
+    const live = hasScore();
+    playBtn.disabled = !live;
+    voiceSelect.disabled = !live;
+    clefSelect.disabled = !live;
+    scoreTempo.disabled = !live;
+    exportBtn.disabled = !live;
+    clearBtn.disabled = !live;
+    saveBtn.disabled = !live || score.saved;
+    undoBtn.disabled = !history.length;
+    saveLabel.textContent = live && score.saved ? 'Saved' : 'Save';
+    if (!live) player.stop();
+  }
+
+  /* Every revision goes through here: it banks the previous run list for
+     undo, marks the score as diverged from what the library holds, and
+     redraws. Edits that change nothing are dropped before they cost an
+     undo step. */
+  function revise(nextRuns) {
+    if (!nextRuns || nextRuns === score.runs || runsEqual(nextRuns, score.runs)) return;
+    history.push(score.runs);
+    if (history.length > MAX_HISTORY) history.shift();
+    score.runs = nextRuns;
+    score.saved = false;
+    // A run list is not a recording any more once it has been edited, so the
+    // take length stops being a true description of it.
+    score.seconds = null;
+    player.stop();
+    refresh();
+  }
+
+  undoBtn.addEventListener('click', () => {
+    if (!history.length) return;
+    score.runs = history.pop();
+    score.saved = false;
+    if (selected != null && selected >= score.runs.length) selected = score.runs.length - 1;
+    player.stop();
+    refresh();
+  });
+
+  /* ══════════════════════════════════════════════════════
+     THE EDITOR
+  ══════════════════════════════════════════════════════ */
+  function select(index) {
+    if (!hasScore()) return;
+    selected = index >= 0 && index < score.runs.length ? index : null;
+    refresh();
+  }
+
+  editorClose.addEventListener('click', () => select(-1));
+
+  function refreshEditor() {
+    const run = selected != null && hasScore() ? score.runs[selected] : null;
+    editorPanel.hidden = !run;
+    if (!run) return;
+
+    const { bar, beat } = runPosition(score.runs, selected);
+    editorWhere.textContent = `Bar ${bar} · beat ${beat}`;
+
+    const isRest = run.note === REST;
+    editorPitch.textContent = isRest ? '—' : run.note.replace('#', '♯');
+    editorPitch.parentElement.classList.toggle('is-rest', isRest);
+    asNote.setAttribute('aria-pressed', String(!isRest));
+    asRest.setAttribute('aria-pressed', String(isRest));
+
+    const midi = isRest ? null : noteToMidi(run.note);
+    editorPanel.querySelectorAll('.step').forEach((step) => {
+      const shift = Number(step.dataset.shift);
+      step.disabled = isRest
+        || midi + shift < EDIT_MIN_MIDI
+        || midi + shift > EDIT_MAX_MIDI;
+    });
+
+    // Rebuilt rather than patched: which lengths fit depends on where the
+    // event sits in its beat, so the set changes with every edit.
+    editorValues.replaceChildren(...availableNoteValues(score.runs, selected).map((value) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'value';
+      button.textContent = value.label;
+      button.title = value.name;
+      button.disabled = !value.allowed;
+      button.classList.toggle('is-current', value.current);
+      if (value.current) button.setAttribute('aria-current', 'true');
+      button.addEventListener('click', () => {
+        revise(setRunUnits(score.runs, selected, value.units));
+      });
+      return button;
+    }));
+  }
+
+  editorPanel.addEventListener('click', (event) => {
+    const step = event.target.closest('.step');
+    if (!step || selected == null) return;
+    revise(transposeRun(score.runs, selected, Number(step.dataset.shift)));
+  });
+
+  asNote.addEventListener('click', () => {
+    if (selected != null) revise(setRunRest(score.runs, selected, false));
+  });
+  asRest.addEventListener('click', () => {
+    if (selected == null) return;
+    // Silencing can merge the event into a rest beside it, and the merged
+    // rest starts where the earlier one did — so follow the selection there
+    // rather than leaving it pointing at whatever slid into the old index.
+    const at = runStartUnits(score.runs, selected);
+    const next = setRunRest(score.runs, selected, true);
+    if (next === score.runs) return;
+    let cursor = 0;
+    for (let i = 0; i < next.length; i++) {
+      if (cursor + next[i].units > at) { selected = i; break; }
+      cursor += next[i].units;
+    }
+    revise(next);
+  });
+
+  /* ══════════════════════════════════════════════════════
+     PLAYBACK
+  ══════════════════════════════════════════════════════ */
   const player = new Player({
     onStateChange: (playing) => {
       playBtn.classList.toggle('is-playing', playing);
@@ -2184,24 +2801,16 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   });
 
-  function setPlaybackEnabled(enabled) {
-    playBtn.disabled = !enabled;
-    voiceSelect.disabled = !enabled;
-    clefSelect.disabled = !enabled;
-    if (!enabled) player.stop();
-  }
-
   playBtn.addEventListener('click', async () => {
     if (player.playing) { player.stop(); return; }
-    if (!lastResult) return;
-
-    // Play what was written down, not what was recorded: the model the score
-    // is drawn from, so anything mis-transcribed is audible as such.
-    const model = modelFromRuns(lastResult.runs);
-    if (!model) { showToast('Nothing to play in that take.', 'error'); return; }
+    if (!hasScore()) return;
 
     try {
-      await player.play(model.runs, lastResult.bpm, voiceSelect.value);
+      // Plays what is written down, not what was recorded — so anything
+      // mis-transcribed is audible as such, and a revision can be checked
+      // by ear rather than only read.
+      const started = await player.play(score.runs, score.bpm, voiceSelect.value);
+      if (!started) showToast('There is nothing but rests to play.', 'error');
     } catch (err) {
       console.error('Playback failed:', err);
       player.stop();
@@ -2209,57 +2818,265 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Changing the clef re-engraves from the same model: only the staff the
-  // notes are set on changes, never the notes themselves.
-  clefSelect.addEventListener('change', () => {
-    if (!lastResult) return;
-    try {
-      const info = renderScore(lastResult.runs, scoreContainer, { clefMode: clefSelect.value });
-      scoreMeta.textContent = scoreMeta.textContent.replace(/(treble|bass)/, info.clef);
-    } catch (err) {
-      console.error('Re-engraving on clef change failed:', err);
-    }
-  });
-
   // Switching voice mid-phrase restarts on the new one rather than finishing
   // the phrase on the old, which is what makes it useful for comparing them.
   voiceSelect.addEventListener('change', async () => {
-    if (!player.playing || !lastResult) return;
-    const model = modelFromRuns(lastResult.runs);
-    if (model) await player.play(model.runs, lastResult.bpm, voiceSelect.value);
+    if (!player.playing || !hasScore()) return;
+    await player.play(score.runs, score.bpm, voiceSelect.value);
   });
 
+  // Changing the clef re-engraves from the same model: only the staff the
+  // notes are set on changes, never the notes themselves.
+  clefSelect.addEventListener('change', () => { if (hasScore()) refresh(); });
+
+  /* The tempo the score is read at. It is not a re-transcription: the rhythm
+     was written down in beats, so marking it faster or slower changes what
+     the metronome mark says, how playback sounds and what the MusicXML
+     carries — and moves not one notehead. */
+  function commitTempo() {
+    if (!hasScore()) return;
+    const bpm = clampBpm(scoreTempo.value);
+    scoreTempo.value = bpm;
+    if (bpm === score.bpm) return;
+    score.bpm = bpm;
+    score.saved = false;
+    player.stop();
+    refresh();
+  }
+  scoreTempo.addEventListener('change', commitTempo);
+  scoreTempo.addEventListener('blur', commitTempo);
+
+  /* ══════════════════════════════════════════════════════
+     EXPORT
+  ══════════════════════════════════════════════════════ */
   exportBtn.addEventListener('click', async () => {
-    if (!lastResult) return;
+    if (!hasScore()) return;
     exportBtn.disabled = true;
     try {
-      const xml = buildMusicXML(lastResult.runs, lastResult.bpm, {
-        title: `humusic transcription — ${lastResult.bpm} bpm`,
-        clefMode: clefSelect.value,
+      await exportScore(score);
+    } finally {
+      refreshControls();
+    }
+  });
+
+  async function exportScore(source) {
+    try {
+      const xml = buildMusicXML(source.runs, source.bpm, {
+        title: source.title || `humusic transcription — ${source.bpm} bpm`,
+        clefMode: source.clefMode || clefSelect.value,
       });
       if (!xml) throw new Error('empty score');
-      const filename = `humusic-${timestampSlug()}.musicxml`;
+      const filename = `humusic-${slugifyTitle(source.title || '')}-${timestampSlug()}.musicxml`;
       const how = await saveTextFile(filename, xml, 'application/vnd.recordare.musicxml+xml');
       showToast(how === 'shared' ? 'Score ready to share.' : `Exported ${filename}`, 'ok');
     } catch (err) {
       console.error('Export failed:', err);
       showToast('Could not export the score.', 'error');
-    } finally {
-      exportBtn.disabled = false;
+    }
+  }
+
+  clearBtn.addEventListener('click', () => {
+    // Only the console is cleared. A saved score stays in the library —
+    // clearing the desk is not the same gesture as burning the file.
+    clearScore();
+  });
+
+  /* ══════════════════════════════════════════════════════
+     THE LIBRARY
+  ══════════════════════════════════════════════════════ */
+  saveBtn.addEventListener('click', () => {
+    if (!hasScore()) return;
+    try {
+      const stored = Library.put({
+        id: score.id,
+        title: score.title || defaultScoreTitle(),
+        createdAt: score.createdAt,
+        bpm: score.bpm,
+        clefMode: clefSelect.value,
+        voice: voiceSelect.value,
+        runs: score.runs,
+      });
+      score.id = stored.id;
+      score.title = stored.title;
+      score.createdAt = stored.createdAt;
+      score.saved = true;
+      refreshControls();
+      refreshLibraryCount();
+      if (!library.hidden) renderLibrary();
+      showToast(`Saved to the library as “${stored.title}”.`, 'ok');
+    } catch (err) {
+      console.error('Save failed:', err);
+      showToast('There is no room left on this device to save the score.', 'error');
     }
   });
 
-  clearBtn.addEventListener('click', () => {
-    lastResult = null;
-    scoreContainer.innerHTML = '';
-    scoreContainer.hidden = true;
-    scoreEmpty.hidden = false;
-    scoreMeta.textContent = '';
-    setPlaybackEnabled(false);
-    exportBtn.disabled = true;
-    clearBtn.disabled = true;
+  function refreshLibraryCount(n = Library.all().length) {
+    libraryCount.textContent = n;
+    libraryBtn.setAttribute('aria-label', `Library — ${n} score${n === 1 ? '' : 's'}`);
+  }
+
+  function openLibrary() {
+    renderLibrary();
+    library.hidden = false;
+    libraryBtn.classList.add('is-open');
+    libraryBtn.setAttribute('aria-expanded', 'true');
+    libraryClose.focus();
+  }
+
+  function closeLibrary() {
+    library.hidden = true;
+    libraryBtn.classList.remove('is-open');
+    libraryBtn.setAttribute('aria-expanded', 'false');
+    libraryBtn.focus();
+  }
+
+  libraryBtn.addEventListener('click', () => (library.hidden ? openLibrary() : closeLibrary()));
+  libraryClose.addEventListener('click', closeLibrary);
+  libraryScrim.addEventListener('click', closeLibrary);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !library.hidden) closeLibrary();
   });
 
+  function renderLibrary() {
+    const records = Library.all();
+    // The tally follows the list it was drawn from, so the two cannot disagree
+    // about how much is in there — the store is shared with any other tab the
+    // page is open in, and the count is on screen the whole time.
+    refreshLibraryCount(records.length);
+    libraryEmpty.hidden = records.length > 0;
+    librarySub.textContent = records.length
+      ? `${records.length} score${records.length === 1 ? '' : 's'} kept on this device`
+      : 'Kept on this device';
+
+    libraryList.replaceChildren(...records.map((record, i) => buildEntry(record, i)));
+  }
+
+  function buildEntry(record, index) {
+    const entry = document.createElement('article');
+    entry.className = 'entry';
+    entry.dataset.id = record.id;
+    if (record.id === score?.id) entry.classList.add('is-current');
+
+    const seq = document.createElement('span');
+    seq.className = 'seq entry__seq';
+    seq.setAttribute('aria-hidden', 'true');
+    seq.textContent = index + 1;
+
+    const body = document.createElement('div');
+    body.className = 'entry__body';
+
+    const title = document.createElement('input');
+    title.className = 'entry__title';
+    title.value = record.title;
+    title.maxLength = 80;
+    title.setAttribute('aria-label', 'Score title');
+    // Committed on blur rather than on every keystroke: the library is
+    // rewritten whole on each write, and rewriting it per character would
+    // also mean re-sorting the list under the cursor.
+    const commitTitle = () => {
+      const next = title.value.trim() || record.title;
+      title.value = next;
+      if (next === record.title) return;
+      record.title = next;
+      Library.put(record);
+      if (score?.id === record.id) score.title = next;
+    };
+    title.addEventListener('blur', commitTitle);
+    title.addEventListener('keydown', (event) => { if (event.key === 'Enter') title.blur(); });
+
+    const meta = document.createElement('p');
+    meta.className = 'entry__meta label';
+    meta.textContent = describeRecord(record);
+
+    body.append(title, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'entry__actions';
+    actions.append(
+      entryButton('Open', 'btn btn--sm', () => openRecord(record)),
+      entryButton('Export', 'btn btn--sm', () => exportScore(record)),
+      entryButton('Delete', 'btn btn--sm btn--danger', (button) => confirmDelete(record, button)),
+    );
+
+    entry.append(seq, body, actions);
+    return entry;
+  }
+
+  function entryButton(text, className, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = text;
+    button.addEventListener('click', () => onClick(button));
+    return button;
+  }
+
+  function describeRecord(record) {
+    const model = modelFromRuns(record.runs, record.clefMode);
+    const parts = [];
+    if (model) {
+      parts.push(`${model.numMeasures} bar${model.numMeasures === 1 ? '' : 's'}`);
+      parts.push(`${model.units.filter((u) => u.note !== REST).length} events`);
+      parts.push(model.clef.label);
+    }
+    parts.push(`${record.bpm} bpm`, formatSavedAt(record.updatedAt));
+    return parts.join(' · ');
+  }
+
+  function openRecord(record) {
+    if (record.clefMode && CLEF_MODES.includes(record.clefMode)) clefSelect.value = record.clefMode;
+    if (record.voice && INSTRUMENTS[record.voice]) voiceSelect.value = record.voice;
+    loadScore({
+      runs: record.runs.map(({ note, units }) => ({ note, units })),
+      bpm: clampBpm(record.bpm),
+      seconds: null,
+      id: record.id,
+      title: record.title,
+      createdAt: record.createdAt,
+      saved: true,
+    });
+    closeLibrary();
+    showToast(`Opened “${record.title}”.`);
+  }
+
+  /* Deleting is the one thing here that cannot be undone, so it asks — but in
+     place, by turning the button into its own confirmation, rather than
+     through a modal stacked on top of the modal it was pressed in. */
+  let pendingDelete = null;
+  function confirmDelete(record, button) {
+    if (pendingDelete !== record.id) {
+      resetPendingDelete();
+      pendingDelete = record.id;
+      button.textContent = 'Sure?';
+      button.dataset.confirming = 'true';
+      setTimeout(() => { if (pendingDelete === record.id) resetPendingDelete(); }, 4000);
+      return;
+    }
+
+    pendingDelete = null;
+    Library.remove(record.id);
+    // The score stays open on the desk; it simply is no longer in the
+    // library, which is what the Save button should now say.
+    if (score?.id === record.id) {
+      score.id = null;
+      score.saved = false;
+      refreshControls();
+    }
+    renderLibrary();
+    showToast(`Deleted “${record.title}”.`);
+  }
+
+  function resetPendingDelete() {
+    pendingDelete = null;
+    libraryList.querySelectorAll('[data-confirming]').forEach((button) => {
+      button.textContent = 'Delete';
+      delete button.dataset.confirming;
+    });
+  }
+
+  /* ══════════════════════════════════════════════════════
+     ODDS AND ENDS
+  ══════════════════════════════════════════════════════ */
   bpmInput.addEventListener('blur', () => { bpmInput.value = clampBpm(bpmInput.value); });
 
   const syncMetronomeLabel = () => {
@@ -2270,11 +3087,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let resizeTimer = null;
   window.addEventListener('resize', () => {
-    if (!lastResult) return;
+    if (!hasScore()) return;
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-      try { renderScore(lastResult.runs, scoreContainer, { clefMode: clefSelect.value }); }
-      catch (err) { console.error('Re-render on resize failed:', err); }
-    }, 160);
+    resizeTimer = setTimeout(refresh, 160);
   });
+
+  refreshLibraryCount();
+  refreshControls();
 });

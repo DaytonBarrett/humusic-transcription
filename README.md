@@ -85,10 +85,42 @@ plucked string's travelling wave (Karplus–Strong, rendered into a buffer becau
 a Web Audio feedback loop is quantised to 128 samples and so cannot go below
 about 344 Hz), a reed's formants and breath.
 
+### Revising a transcription
+
+A detector is not a copyist. It mishears an octave, splits a held note on a bow
+change, writes a sixteenth where a triplet was played — so what it produces is a
+first draft, and every part of it can be corrected afterwards. Tapping any note
+or rest on the staff opens it for revision: **pitch** by semitone or octave,
+**length** from a keyboard of every value the grid can express, and whether the
+event sounds at all. **Tempo** is set separately from the tempo the take was
+recorded to, because the rhythm was written down in beats — marking a score
+faster or slower changes the metronome mark, the playback and the exported
+MusicXML, and moves not one notehead.
+
+Lengthening a note takes its time from what follows and shortening gives it back
+as a rest, so the bar lines never move. Rippling would be simpler to implement
+and worse to use: in strict 4/4 it drags every later note off the beat it was
+played on, and re-fitting the whole line to the grid afterwards is exactly the
+guesswork the correction was made to undo. Values that cannot be written at that
+point in the bar — a triplet eighth inside a beat already divided into
+sixteenths, which no tuplet bracket can express — are shown struck through
+rather than accepted and then silently mangled.
+
+### The library
+
+Scores are kept on the device and listed in a catalogue you can reopen, rename,
+export or delete. What is stored is the run list — note names and lengths in
+grid units — and never the audio. That is a whole take in a few hundred bytes
+rather than a few megabytes, it survives being reopened at a different tempo,
+and it keeps the App Store privacy label honest: recording the microphone to
+disk would be the first thing to make *no data collected* untrue.
+
 **Limitations worth knowing:** the detector is monophonic, so chords will not
 transcribe correctly; everything is written in 4/4; the tempo is taken from you
-rather than inferred from the audio; and triplet detection covers eighth-note
-triplets within a beat, not duplets, quintuplets or triplets spanning two beats.
+rather than inferred from the audio; triplet detection covers eighth-note
+triplets within a beat, not duplets, quintuplets or triplets spanning two beats;
+and the library lives in `localStorage`, so it is per-device and goes with the
+app rather than with an account.
 
 ## iOS
 

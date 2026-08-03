@@ -36,10 +36,16 @@ SCANNED_SUFFIXES = {".html", ".css", ".js"}
 # is fetched at runtime.
 SCAN_SKIP = {"vendor/vexflow.js"}
 
-# musicxml.org appears only as the DTD system identifier inside the DOCTYPE
-# line humusic writes into exported .musicxml files. It is an identifier,
-# not a fetch: nothing resolves it at runtime, in the app or in a browser.
-ALLOWED_HOSTS = {b"www.musicxml.org"}
+# Both of these are identifiers rather than fetches. Nothing resolves either
+# one at runtime, in the app or in a browser.
+#
+#   musicxml.org  the DTD system identifier in the DOCTYPE line humusic
+#                 writes into exported .musicxml files.
+#   w3.org        the SVG namespace URI. createElementNS takes the namespace
+#                 as a literal string and there is no other spelling of it;
+#                 the selection layer the score is made tappable with builds
+#                 its rects that way.
+ALLOWED_HOSTS = {b"www.musicxml.org", b"www.w3.org"}
 
 
 def main() -> int:

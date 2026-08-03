@@ -29,11 +29,23 @@
       <span class="label">Transcriber</span>
     </div>
 
-    <dl class="masthead__meta">
-      <div class="cell"><dt class="label">State</dt><dd class="mono" id="metaState">IDLE</dd></div>
-      <div class="cell"><dt class="label">Rate</dt><dd class="mono" id="metaRate">—</dd></div>
-      <div class="cell"><dt class="label">Metre</dt><dd class="mono">4/4</dd></div>
-    </dl>
+    <div class="masthead__right">
+      <dl class="masthead__meta">
+        <div class="cell"><dt class="label">State</dt><dd class="mono" id="metaState">IDLE</dd></div>
+        <div class="cell"><dt class="label">Rate</dt><dd class="mono" id="metaRate">—</dd></div>
+        <div class="cell"><dt class="label">Metre</dt><dd class="mono">4/4</dd></div>
+      </dl>
+
+      <button class="btn btn--sm masthead__library" id="libraryBtn" type="button"
+              aria-haspopup="dialog" aria-expanded="false">
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M2 1.5h3v11H2zM6 1.5h3v11H6zM10.2 2.1l2.3.6-2.6 10-2.3-.6z"
+                stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </svg>
+        Library
+        <span class="mono masthead__count" id="libraryCount">0</span>
+      </button>
+    </div>
   </header>
 
   <main class="console__grid">
@@ -123,48 +135,145 @@
         <div class="score__paper" id="scoreContainer" hidden></div>
       </div>
 
+      <section class="panel editor" id="editorPanel" aria-labelledby="editor-h" hidden>
+        <div class="editor__head">
+          <h3 class="label" id="editor-h">Revise</h3>
+          <span class="editor__where mono" id="editorWhere"></span>
+          <button class="editor__close label" id="editorClose" type="button">Deselect</button>
+        </div>
+
+        <dl class="rows editor__rows">
+          <div class="row">
+            <dt class="label">Pitch</dt>
+            <dd class="row__v stepper">
+              <button class="step" type="button" data-shift="-12" aria-label="Down an octave">8vb</button>
+              <button class="step" type="button" data-shift="-1" aria-label="Down a semitone">−</button>
+              <span class="stepper__value mono" id="editorPitch">—</span>
+              <button class="step" type="button" data-shift="1" aria-label="Up a semitone">+</button>
+              <button class="step" type="button" data-shift="12" aria-label="Up an octave">8va</button>
+            </dd>
+          </div>
+
+          <div class="row">
+            <dt class="label">Sounds</dt>
+            <dd class="row__v">
+              <div class="segmented" role="group" aria-label="Note or rest">
+                <button class="seg" type="button" id="asNote" aria-pressed="false">Note</button>
+                <button class="seg" type="button" id="asRest" aria-pressed="false">Rest</button>
+              </div>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="editor__lengths">
+          <span class="label editor__lengths-head">Length</span>
+          <div class="values" id="editorValues" role="group" aria-label="Note length"></div>
+        </div>
+
+        <p class="editor__note">
+          Lengthening takes the time from what follows; shortening gives it
+          back as a rest. Bar lines hold still, so an edit stays one edit.
+          Values that will not fit the beat are greyed out.
+        </p>
+      </section>
+
       <div class="actions">
-        <button class="btn" id="playBtn" type="button" disabled aria-label="Play the transcription">
-          <svg class="play__icon" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path class="play__glyph" d="M3.5 1.8v10.4L12 7 3.5 1.8Z"
-                  fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-            <path class="stop__glyph" d="M3.2 3.2h7.6v7.6H3.2z"
-                  fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-          </svg>
-          <span id="playLabel">Play</span>
-        </button>
+        <div class="actions__set">
+          <button class="btn" id="playBtn" type="button" disabled aria-label="Play the transcription">
+            <svg class="play__icon" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path class="play__glyph" d="M3.5 1.8v10.4L12 7 3.5 1.8Z"
+                    fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              <path class="stop__glyph" d="M3.2 3.2h7.6v7.6H3.2z"
+                    fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            </svg>
+            <span id="playLabel">Play</span>
+          </button>
 
-        <label class="picker" for="voiceSelect">
-          <span class="label picker__label">Voice</span>
-          <select class="picker__select mono" id="voiceSelect" disabled>
-            <option value="piano" selected>Piano</option>
-            <option value="guitar">Guitar</option>
-            <option value="sax">Saxophone</option>
-            <option value="synth">Synth</option>
-          </select>
-        </label>
+          <label class="picker" for="voiceSelect">
+            <span class="label picker__label">Voice</span>
+            <select class="picker__select mono" id="voiceSelect" disabled>
+              <option value="piano" selected>Piano</option>
+              <option value="guitar">Guitar</option>
+              <option value="sax">Saxophone</option>
+              <option value="synth">Synth</option>
+            </select>
+          </label>
 
-        <label class="picker" for="clefSelect">
-          <span class="label picker__label">Clef</span>
-          <select class="picker__select mono" id="clefSelect" disabled>
-            <option value="treble" selected>Treble</option>
-            <option value="bass">Bass</option>
-            <option value="auto">Auto</option>
-          </select>
-        </label>
+          <label class="picker" for="clefSelect">
+            <span class="label picker__label">Clef</span>
+            <select class="picker__select mono" id="clefSelect" disabled>
+              <option value="treble" selected>Treble</option>
+              <option value="bass">Bass</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
 
-        <button class="btn btn--primary" id="exportBtn" type="button" disabled>
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M7 1v8M4 6.5 7 9.5l3-3M1.5 11.5v1h11v-1"
-                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Export MusicXML
-        </button>
-        <button class="btn" id="clearBtn" type="button" disabled>Clear</button>
+          <label class="picker picker--field" for="scoreTempo">
+            <span class="label picker__label">Tempo</span>
+            <input class="picker__input mono" id="scoreTempo" type="number"
+                   min="40" max="240" step="1" value="100" inputmode="numeric" disabled />
+            <span class="picker__unit">bpm</span>
+          </label>
+        </div>
+
+        <div class="actions__set actions__set--end">
+          <button class="btn" id="undoBtn" type="button" disabled aria-label="Undo the last revision">
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M2 5.5h6.5a3.2 3.2 0 0 1 0 6.4H5M2 5.5 5 2.5M2 5.5l3 3"
+                    stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Undo
+          </button>
+          <button class="btn" id="saveBtn" type="button" disabled>
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M1.5 1.5h8.6l2.4 2.4v8.6h-11zM4 1.5v4h5v-4M4 12.5v-4h6v4"
+                    stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            </svg>
+            <span id="saveLabel">Save</span>
+          </button>
+          <button class="btn btn--primary" id="exportBtn" type="button" disabled>
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M7 1v8M4 6.5 7 9.5l3-3M1.5 11.5v1h11v-1"
+                    stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Export MusicXML
+          </button>
+          <button class="btn" id="clearBtn" type="button" disabled>Clear</button>
+        </div>
       </div>
+
+      <p class="col__note col__note--wide">
+        The transcription is a first draft, not a verdict. Tap any note or rest
+        on the staff to revise its pitch and its length, set the tempo the score
+        is read at, then save it — the library keeps the notation and the tempo
+        on this device, and never the recording.
+      </p>
     </section>
 
   </main>
+
+  <div class="library" id="library" hidden>
+    <div class="library__scrim" id="libraryScrim"></div>
+
+    <section class="library__sheet panel panel--solid" role="dialog" aria-modal="true"
+             aria-labelledby="library-h">
+      <header class="library__head">
+        <div class="library__heading">
+          <p class="display library__title" id="library-h">The <em>library</em>.</p>
+          <p class="label library__sub" id="librarySub">Kept on this device</p>
+        </div>
+        <button class="btn" id="libraryClose" type="button">Close</button>
+      </header>
+
+      <div class="library__list" id="libraryList"></div>
+
+      <p class="library__empty" id="libraryEmpty" hidden>
+        Nothing kept yet. Transcribe a line, revise it if it needs it, and
+        press Save — the notes and the tempo are written to this device, so
+        the library travels with the app and not with an account.
+      </p>
+    </section>
+  </div>
 
   <footer class="colophon">
     <a class="label colophon__back" href="index.html" data-web-only>← Publication</a>
