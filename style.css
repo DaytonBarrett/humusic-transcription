@@ -533,7 +533,8 @@ main { position: relative; z-index: 1; }
 }
 
 @media (max-width: 880px) {
-  .masthead__nav, .masthead__cta { display: none; }
+  /* The drawer carries all three; the masthead keeps only the toggle. */
+  .masthead__nav, .masthead__cta, .masthead .ghlink { display: none; }
   .masthead__toggle { display: flex; }
   .entries { grid-template-columns: minmax(0, 1fr); }
   .method { grid-template-columns: minmax(0, 1fr); gap: var(--s8); }

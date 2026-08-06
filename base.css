@@ -349,6 +349,25 @@ input, select, textarea { font: inherit; color: inherit; }
 
 .btn svg { flex-shrink: 0; }
 
+/* Source link — the GitHub mark, kept square and icon-only so it reads as
+   a mark of provenance rather than a third button arguing with the CTA. */
+.ghlink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border: var(--rule);
+  color: var(--ink);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.ghlink:hover { background: var(--ink); color: var(--paper); }
+.ghlink svg { display: block; }
+
+/* Matches .btn--sm, for mastheads whose controls are already 30px. */
+.ghlink--sm { width: 30px; height: 30px; }
+
 /* ──────────────────────────────────────────────────────────
    DATA ROWS — dense ruled key/value cells
    ────────────────────────────────────────────────────────── */
