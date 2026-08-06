@@ -20,7 +20,7 @@ const std::vector<std::string> NOTE_NAMES = {
 // This is the generalized version of the range-checking idea 
 //(e.g. "if freq is between 479.82 and 508.35 -> B4").
 // Instead of hand-typing a frequency range for every note in every
-// octave, we compute the nearest note mathematically using the
+// octave, it computes the nearest note mathematically using the
 // standard equal-temperament formula, with A4 = 440 Hz as the anchor:
 //
 //     midiNote = 69 + 12 * log2(freq / 440)
