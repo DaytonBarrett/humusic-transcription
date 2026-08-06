@@ -8,28 +8,18 @@
 
 #define pi 3.14159265358979323846
 
-// ---------------------------------------------------------------------
-// Standard 12-tone note names, used with a MIDI note number to build
-// a full note name like "A4" or "C#5".
-// ---------------------------------------------------------------------
 const std::vector<std::string> NOTE_NAMES = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 };
 
-// ---------------------------------------------------------------------
-// This is the generalized version of the range-checking idea 
-//(e.g. "if freq is between 479.82 and 508.35 -> B4").
-// Instead of hand-typing a frequency range for every note in every
-// octave, we compute the nearest note mathematically using the
-// standard equal-temperament formula, with A4 = 440 Hz as the anchor:
-//
-//     midiNote = 69 + 12 * log2(freq / 440)
-//
-// Rounding to the nearest integer MIDI note is mathematically
-// equivalent to picking whichever named note's frequency range the
-// peak falls into -- the boundaries between notes sit at the
-// geometric mean of their frequencies
-// ---------------------------------------------------------------------
+/* This is the generalized version of the range-checking idea 
+(e.g. "if freq is between 479.82 and 508.35 -> B4").
+ Instead of hand-typing a frequency range for every note in every
+ octave, it computes the nearest note mathematically using the
+ standard equal-temperament formula, with A4 = 440 Hz as the anchor:
+
+    midiNote = 69 + 12 * log2(freq / 440) */
+
 std::string frequencyToNote(float freq) {
     if (freq <= 20.0f) {
         return "Rest"; // treat near-silence / sub-audible as no note
@@ -45,11 +35,7 @@ std::string frequencyToNote(float freq) {
     return NOTE_NAMES[noteIndex] + std::to_string(octave);
 }
 
-// ---------------------------------------------------------------------
-// Records `totalSamples` mono float samples from the default input
-// device (microphone) at `sampleRate` using PortAudio, blocking until
-// the recording is complete.
-// ---------------------------------------------------------------------
+
 std::vector<float> recordAudio(int sampleRate, int totalSamples) {
     std::vector<float> buffer(totalSamples, 0.0f);
     PaStream* stream = nullptr;
@@ -134,7 +120,7 @@ int main() {
     std::cout << "Splitting " << numSplits << " times into " << numSegments << " segments.\n";
     std::cout << "Each segment will be " << segmentSize << " samples long.\n\n";
 
-    // ---- move pointer through audio (left to right), analyze each segment ----
+ 
     float* audioPtr = audioBuffer.data();
 
     std::vector<float> peakFreqs(numSegments); // peak frequency found in each segment
@@ -174,7 +160,6 @@ int main() {
         audioPtr += segmentSize; // move pointer to next segment
     }
 
-    // ---- Note identification ----
     // Uses each segment's stored peak frequency (peakFreqs[i]) rather than
     // re-reading raw sample values, and covers every octave via
     // frequencyToNote() instead of a hand-written range per note.
@@ -184,7 +169,6 @@ int main() {
         myArray[i] = frequencyToNote(peakFreqs[i]);
     }
 
-    // ---- print final transcription ----
     std::cout << "=== Transcribed notes ===\n";
     for (int i = 0; i < numSegments; i++) {
         std::cout << "Segment " << (i + 1) << ": " << myArray[i] << "\n";
