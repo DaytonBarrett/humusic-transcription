@@ -7,6 +7,10 @@ becomes index.html so WKWebView opens straight into the instrument.
 The build fails if anything in the bundle references a remote host. An App
 Store build has to work with no network at all, so a stray CDN link is a
 release blocker, not a warning.
+
+Markup carrying data-web-only is dropped on the way in. It is for the things
+that make sense on humusic.org and not in a shipped app — the link to the
+source repository being the one that exists today.
 """
 
 import re
@@ -47,6 +51,42 @@ SCAN_SKIP = {"vendor/vexflow.js"}
 #                 its rects that way.
 ALLOWED_HOSTS = {b"www.musicxml.org", b"www.w3.org"}
 
+WEB_ONLY = re.compile(r"<(\w+)(?=[^>]*\bdata-web-only\b)[^>]*>")
+
+
+def strip_web_only(html: str) -> str:
+    """Remove every element marked data-web-only, children included.
+
+    The document is sliced rather than reparsed, so everything that is not
+    being removed survives byte for byte — this runs over handwritten HTML
+    and a round trip through a parser would quietly restyle it.
+    """
+    while (start := WEB_ONLY.search(html)) is not None:
+        tag = start.group(1)
+        depth = 0
+        scanner = re.compile(rf"<(/?){tag}\b[^>]*?(/?)>", re.IGNORECASE)
+        for token in scanner.finditer(html, start.start()):
+            closing, self_closing = token.group(1), token.group(2)
+            if self_closing:
+                continue
+            depth += -1 if closing else 1
+            if depth == 0:
+                end = token.end()
+                break
+        else:
+            raise SystemExit(f"unclosed data-web-only <{tag}> element")
+
+        line_start = html.rfind("\n", 0, start.start()) + 1
+        if not html[line_start:start.start()].strip():
+            start_cut = line_start
+        else:
+            start_cut = start.start()
+        line_end = html.find("\n", end)
+        if line_end != -1 and not html[end:line_end].strip():
+            end = line_end + 1
+        html = html[:start_cut] + html[end:]
+    return html
+
 
 def main() -> int:
     if WWW.exists():
@@ -60,7 +100,10 @@ def main() -> int:
             return 1
         dst = WWW / dst_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        if dst.suffix == ".html":
+            dst.write_text(strip_web_only(src.read_text(encoding="utf-8")), encoding="utf-8")
+        else:
+            shutil.copy2(src, dst)
 
     src_fonts = ROOT / FONT_DIR[0]
     if not src_fonts.is_dir():

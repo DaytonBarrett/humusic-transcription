@@ -199,6 +199,48 @@
 }
 @keyframes pulse { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.25; } }
 
+/* Count-in — four beats, drawn as four dots that take their turn.
+   The row is present at rest rather than revealed when it starts, because a
+   count-in that pushed the meter down the panel as it appeared would be a
+   lurch at exactly the moment the reader is watching for a beat. */
+.countin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-top: var(--s4);
+}
+.countin__label {
+  color: var(--ink-3);
+  transition: color var(--t1) var(--ease);
+}
+.countin.is-counting .countin__label { color: var(--vermillion); }
+
+.countin__dots { display: flex; gap: var(--s2); }
+
+.countin__dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: var(--rule-hair);
+  background: var(--paper-2);
+  transition: background 140ms linear, border-color 140ms linear;
+}
+/* Struck on the beat and left standing, so the four read as a count and not
+   as four unrelated flashes. */
+.countin__dot.is-lit {
+  background: var(--vermillion);
+  border-color: var(--vermillion);
+  animation: countbeat 300ms var(--ease) 1;
+}
+@keyframes countbeat {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.55); }
+  100% { transform: scale(1); }
+}
+
+.rec.is-counting .rec__dot { animation: pulse 0.4s steps(1, end) infinite; }
+
 /* Segmented level meter */
 .meter {
   position: relative;
@@ -245,6 +287,46 @@
 .bpm input:focus { outline: none; color: var(--blue-deep); }
 .bpm input:disabled { opacity: 0.45; }
 .bpm__unit { font-family: var(--mono); font-size: var(--fs-10); color: var(--ink-3); }
+
+/* A select sitting in a data row reads as the row's value, not as a control
+   parked beside it — so it is right-aligned on the row's own baseline and
+   carries nothing but its chevron. */
+.rowselect {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 22ch;
+  padding: 0 12px 0 0;
+  background: none;
+  border: none;
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.04em;
+  text-align: right;
+  text-align-last: right;
+  color: var(--ink);
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 4px center, right 0 center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.rowselect:focus { outline: none; color: var(--blue-deep); }
+.rowselect:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.rowselect:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* The instrument row has a second line under it whenever the part is written
+   at some interval other than the one it sounds at. */
+.row--stacked { align-items: flex-start; }
+.row--stacked .row__v { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.row__hint {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-align: right;
+}
 
 /* Metronome switch — a panel toggle, squared off to match the rules */
 .toggle {

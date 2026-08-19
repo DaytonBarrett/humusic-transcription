@@ -963,6 +963,258 @@ function resolveClef(runs, mode) {
   return CLEFS.treble;
 }
 
+/* ══════════════════════════════════════════════════════════
+   KEY, SPELLING AND TRANSPOSITION
+   The tracker hears frequencies, so what it hands on is a
+   pitch and nothing else: C#4, whatever the music around it
+   was doing. But C# and Db are the same pitch and different
+   notes, and which one a copyist writes is decided by the key
+   — so the key is asked for rather than guessed, and every
+   name on the page is spelled from it at the moment it is
+   drawn. The runs themselves stay in one canonical spelling,
+   which is what lets the key be changed after the fact
+   without touching a single stored note.
+
+   The instrument is the second half of the same question. A
+   trumpet player reading concert pitch plays everything a
+   tone flat, because a B♭ trumpet sounds a tone below what
+   it reads. So the part is written up a tone — notes and key
+   signature together — and what the player then plays is the
+   music that was hummed. Every transposition here is that
+   one idea: an interval applied to the pitches and to the
+   signature at once, so the part stays internally consistent
+   and sounds, on its own instrument, at concert pitch.
+══════════════════════════════════════════════════════════ */
+
+/* The line of fifths, which is what a key signature really is: seven
+   consecutive positions on it. C sits at 0, the sharp direction is positive
+   and the flat direction negative, and a letter recurs every seventh step
+   one accidental further out — which is the whole of spelling in two lines. */
+const FIFTHS_LETTERS = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+const LETTER_SEMITONES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+function spellingAtFifth(index) {
+  return {
+    step: FIFTHS_LETTERS[(((index + 1) % 7) + 7) % 7],
+    alter: Math.floor((index + 1) / 7),
+  };
+}
+
+const parseSpelling = (name) => ({
+  step: name[0],
+  alter: name.length > 1 ? (name[1] === '#' ? 1 : -1) : 0,
+});
+
+// Where a chromatic note goes when the key has no opinion about it. A note
+// outside the scale is spelled on the side of the circle its key sits on:
+// sharps in sharp keys, flats in flat keys. Neither table ever produces E♯,
+// B♯, F♭ or C♭ — those are spellings a key signature asks for, never ones a
+// passing chromatic note should be given.
+const SHARP_SPELLINGS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map(parseSpelling);
+const FLAT_SPELLINGS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'].map(parseSpelling);
+
+/* One spelling per pitch class, for a key of the given signature. The seven
+   notes of the scale are taken from the line of fifths, so they are spelled
+   the way the signature writes them however far out that goes — in G♭ major
+   the seventh degree is F, and the fourth is C♮, and pitch class 11 is C♭
+   rather than B, because that is what the six flats on the staff mean. The
+   five notes left over are filled in from the table above. */
+function keySpellings(fifths) {
+  const table = new Array(12).fill(null);
+  for (let i = fifths - 1; i <= fifths + 5; i++) {
+    const spelled = spellingAtFifth(i);
+    table[(LETTER_SEMITONES[spelled.step] + spelled.alter + 24) % 12] = spelled;
+  }
+  const chromatic = fifths < 0 ? FLAT_SPELLINGS : SHARP_SPELLINGS;
+  return table.map((entry, pitchClass) => entry || chromatic[pitchClass]);
+}
+
+/* The written octave follows the letter, not the pitch: C♭4 is the same key
+   on a piano as B3 and is written in the fourth octave regardless, because
+   it is a C. Deriving the octave from the letter and its alteration is what
+   keeps that straight — a pitch-class shortcut puts C♭4 an octave low and
+   B♯3 an octave high, and both errors are silent. */
+function spellMidi(midi, spellings) {
+  const spelled = spellings[((midi % 12) + 12) % 12];
+  return {
+    ...spelled,
+    octave: Math.round((midi - LETTER_SEMITONES[spelled.step] - spelled.alter) / 12) - 1,
+  };
+}
+
+const ACCIDENTAL_GLYPHS = { '-1': '♭', 0: '', 1: '♯' };
+const ACCIDENTAL_NAMES = { '-1': 'flat', 0: 'natural', 1: 'sharp' };
+
+const spelledToVexKey = ({ step, alter, octave }) =>
+  `${step.toLowerCase()}${alter > 0 ? '#' : alter < 0 ? 'b' : ''}/${octave}`;
+
+const spelledToLabel = ({ step, alter, octave }) =>
+  `${step}${ACCIDENTAL_GLYPHS[alter]}${octave}`;
+
+// Which letters the signature itself alters, in the order they are written.
+// Flats are the same seven letters read backwards, which is why one list does
+// for both.
+function keySignatureAlter(step, fifths) {
+  const sharpIndex = FIFTHS_LETTERS.indexOf(step);
+  if (fifths > 0) return sharpIndex < fifths ? 1 : 0;
+  if (fifths < 0) return 6 - sharpIndex < -fifths ? -1 : 0;
+  return 0;
+}
+
+// Indexed by signature, seven flats to seven sharps. These double as the
+// spellings VexFlow is asked for, which is why they are written its way.
+const MAJOR_SPECS = ['Cb', 'Gb', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#'];
+const MINOR_SPECS = ['Abm', 'Ebm', 'Bbm', 'Fm', 'Cm', 'Gm', 'Dm', 'Am', 'Em', 'Bm', 'F#m', 'C#m', 'G#m', 'D#m', 'A#m'];
+
+function keyLabel(spec) {
+  const minor = spec.endsWith('m');
+  const tonic = (minor ? spec.slice(0, -1) : spec).replace('#', '♯').replace('b', '♭');
+  return `${tonic} ${minor ? 'minor' : 'major'}`;
+}
+
+/* The keys, in the order a musician thinks of them: C, then out through the
+   sharps, then back through the flats. Relative majors and minors share a
+   signature and differ only in where home is — which changes nothing on the
+   staff, but is carried into the MusicXML so that a file opened in a notation
+   program knows it is in A minor and not C major. */
+const KEY_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4, -5, -6, -7];
+
+const KEYS = ['major', 'minor'].flatMap((mode) =>
+  KEY_ORDER.map((fifths) => {
+    const spec = (mode === 'minor' ? MINOR_SPECS : MAJOR_SPECS)[fifths + 7];
+    return { id: spec, fifths, mode, label: keyLabel(spec) };
+  }));
+
+const KEY_BY_ID = Object.fromEntries(KEYS.map((key) => [key.id, key]));
+const DEFAULT_KEY_ID = 'C';
+
+/* The instruments, each carrying the interval its part is written at:
+   `semitones` is how far the written pitch sits above the sounding one, and
+   `fifths` is that same interval measured on the line of fifths, which is
+   what moves the key signature. The two have to agree — a major second is
+   two semitones and two fifths — and the pair is what makes a transposition
+   spell correctly rather than merely sound correct: an alto saxophone in
+   concert E♭ reads C major, not B♯ major.
+
+   Octave transpositions are the same mechanism with nothing to say about the
+   signature. A guitar is written an octave above where it sounds, so a line
+   hummed at middle C is engraved an octave higher and a guitarist reading it
+   plays the note that was hummed. */
+const PARTS = [
+  { id: 'piano',       group: 'Keyboards & mallets', label: 'Piano',              semitones: 0,   fifths: 0 },
+  { id: 'organ',       group: 'Keyboards & mallets', label: 'Organ',              semitones: 0,   fifths: 0 },
+  { id: 'accordion',   group: 'Keyboards & mallets', label: 'Accordion',          semitones: 0,   fifths: 0 },
+  { id: 'harp',        group: 'Keyboards & mallets', label: 'Harp',               semitones: 0,   fifths: 0 },
+  { id: 'marimba',     group: 'Keyboards & mallets', label: 'Marimba',            semitones: 0,   fifths: 0 },
+  { id: 'vibraphone',  group: 'Keyboards & mallets', label: 'Vibraphone',         semitones: 0,   fifths: 0 },
+  { id: 'xylophone',   group: 'Keyboards & mallets', label: 'Xylophone (8va)',    semitones: -12, fifths: 0 },
+  { id: 'glockenspiel', group: 'Keyboards & mallets', label: 'Glockenspiel (15ma)', semitones: -24, fifths: 0 },
+
+  { id: 'guitar',      group: 'Guitars & bass',     label: 'Guitar (8vb)',        semitones: 12,  fifths: 0 },
+  { id: 'bass-guitar', group: 'Guitars & bass',     label: 'Bass guitar (8vb)',   semitones: 12,  fifths: 0 },
+  { id: 'mandolin',    group: 'Guitars & bass',     label: 'Mandolin',            semitones: 0,   fifths: 0 },
+
+  { id: 'violin',      group: 'Strings',            label: 'Violin',              semitones: 0,   fifths: 0 },
+  { id: 'viola',       group: 'Strings',            label: 'Viola',               semitones: 0,   fifths: 0 },
+  { id: 'cello',       group: 'Strings',            label: 'Cello',               semitones: 0,   fifths: 0 },
+  { id: 'double-bass', group: 'Strings',            label: 'Double bass (8vb)',   semitones: 12,  fifths: 0 },
+
+  { id: 'voice',       group: 'Voice',              label: 'Voice',               semitones: 0,   fifths: 0 },
+  { id: 'tenor-voice', group: 'Voice',              label: 'Tenor voice (8vb)',   semitones: 12,  fifths: 0 },
+
+  { id: 'piccolo',     group: 'Woodwinds',          label: 'Piccolo (8va)',       semitones: -12, fifths: 0 },
+  { id: 'flute',       group: 'Woodwinds',          label: 'Flute',               semitones: 0,   fifths: 0 },
+  { id: 'alto-flute',  group: 'Woodwinds',          label: 'Alto flute (G)',      semitones: 5,   fifths: -1 },
+  { id: 'recorder',    group: 'Woodwinds',          label: 'Recorder, soprano (8va)', semitones: -12, fifths: 0 },
+  { id: 'oboe',        group: 'Woodwinds',          label: 'Oboe',                semitones: 0,   fifths: 0 },
+  { id: 'english-horn', group: 'Woodwinds',         label: 'English horn (F)',    semitones: 7,   fifths: 1 },
+  { id: 'clarinet-eb', group: 'Woodwinds',          label: 'Clarinet (E♭)',       semitones: -3,  fifths: 3 },
+  { id: 'clarinet',    group: 'Woodwinds',          label: 'Clarinet (B♭)',       semitones: 2,   fifths: 2 },
+  { id: 'clarinet-a',  group: 'Woodwinds',          label: 'Clarinet (A)',        semitones: 3,   fifths: -3 },
+  { id: 'bass-clarinet', group: 'Woodwinds',        label: 'Bass clarinet (B♭)',  semitones: 14,  fifths: 2 },
+  { id: 'bassoon',     group: 'Woodwinds',          label: 'Bassoon',             semitones: 0,   fifths: 0 },
+
+  { id: 'soprano-sax', group: 'Saxophones',         label: 'Soprano sax (B♭)',    semitones: 2,   fifths: 2 },
+  { id: 'alto-sax',    group: 'Saxophones',         label: 'Alto sax (E♭)',       semitones: 9,   fifths: 3 },
+  { id: 'tenor-sax',   group: 'Saxophones',         label: 'Tenor sax (B♭)',      semitones: 14,  fifths: 2 },
+  { id: 'bari-sax',    group: 'Saxophones',         label: 'Baritone sax (E♭)',   semitones: 21,  fifths: 3 },
+
+  { id: 'trumpet',     group: 'Brass',              label: 'Trumpet (B♭)',        semitones: 2,   fifths: 2 },
+  { id: 'cornet',      group: 'Brass',              label: 'Cornet (B♭)',         semitones: 2,   fifths: 2 },
+  { id: 'flugelhorn',  group: 'Brass',              label: 'Flugelhorn (B♭)',     semitones: 2,   fifths: 2 },
+  { id: 'horn',        group: 'Brass',              label: 'French horn (F)',     semitones: 7,   fifths: 1 },
+  { id: 'alto-horn',   group: 'Brass',              label: 'Alto horn (E♭)',      semitones: 9,   fifths: 3 },
+  { id: 'trombone',    group: 'Brass',              label: 'Trombone',            semitones: 0,   fifths: 0 },
+  { id: 'baritone-tc', group: 'Brass',              label: 'Baritone horn (B♭)',  semitones: 14,  fifths: 2 },
+  { id: 'euphonium',   group: 'Brass',              label: 'Euphonium',           semitones: 0,   fifths: 0 },
+  { id: 'tuba',        group: 'Brass',              label: 'Tuba',                semitones: 0,   fifths: 0 },
+];
+
+const PART_BY_ID = Object.fromEntries(PARTS.map((part) => [part.id, part]));
+const DEFAULT_PART_ID = 'piano';
+
+/* What MusicXML wants is the inverse of what is written here: the interval
+   from the written pitch to the sounding one, split into a diatonic part
+   (letters), a chromatic part (semitones) and whole octaves. Splitting it
+   that way is what tells an importer that a tenor saxophone reads a major
+   second up and an octave besides, rather than merely fourteen semitones —
+   the difference between a part that re-transposes correctly and one that
+   comes back spelled with double sharps. */
+function xmlTransposeFor(part) {
+  if (!part.semitones && !part.fifths) return null;
+  const diatonicWithin = (((4 * part.fifths) % 7) + 7) % 7;
+  const chromaticWithin = (((7 * part.fifths) % 12) + 12) % 12;
+  const octaves = Math.round((part.semitones - chromaticWithin) / 12);
+
+  const diatonic = -(diatonicWithin + 7 * octaves);
+  const octaveChange = Math.trunc(diatonic / 7);
+  return {
+    diatonic: diatonic - 7 * octaveChange,
+    chromatic: -part.semitones - 12 * octaveChange,
+    octaveChange,
+  };
+}
+
+/* Everything the engraver, the exporter and the console need to know about
+   how a set of concert pitches is written down. Built once from the two
+   choices the reader makes and then passed around whole, so the staff, the
+   file and the label under the picker cannot disagree about what key the
+   part is in. */
+function createNotation(keyId, partId) {
+  const key = KEY_BY_ID[keyId] || KEY_BY_ID[DEFAULT_KEY_ID];
+  const part = PART_BY_ID[partId] || PART_BY_ID[DEFAULT_PART_ID];
+
+  // A signature runs from seven flats to seven sharps and no further, so a
+  // transposition that lands outside that is respelled the other way round
+  // the circle rather than refused: an alto saxophone reading concert C♯
+  // major is written in B♭, not in the ten sharps of A♯.
+  let fifths = key.fifths + part.fifths;
+  while (fifths > 7) fifths -= 12;
+  while (fifths < -7) fifths += 12;
+
+  const spec = (key.mode === 'minor' ? MINOR_SPECS : MAJOR_SPECS)[fifths + 7];
+  const spellings = keySpellings(fifths);
+
+  return {
+    key,
+    part,
+    fifths,
+    mode: key.mode,
+    spec,                              // the signature, as VexFlow spells it
+    label: keyLabel(spec),             // the key as written, which is not always the key played
+    transposes: part.semitones !== 0,
+    spellings,
+    // Concert pitch in, written pitch out — still in the canonical spelling,
+    // because naming it is the next step and not this one.
+    written: (name) => (name === REST ? REST : midiToNoteName(noteToMidi(name) + part.semitones)),
+    spell: (name) => spellMidi(noteToMidi(name), spellings),
+    signatureAlter: (step) => keySignatureAlter(step, fifths),
+    xmlTranspose: xmlTransposeFor(part),
+  };
+}
+
+const DEFAULT_NOTATION = createNotation(DEFAULT_KEY_ID, DEFAULT_PART_ID);
+
 /* Reads back the grid a run list already sits on, rather than fitting one to
    it. Everything downstream of `quantizeRuns` — a reloaded score, an edited
    one — has boundaries that are already exactly on a grid, and re-running the
@@ -1195,11 +1447,22 @@ function buildEngravingUnits(runs, isTriplet) {
 /* Builds the engraving model from runs that are already on the grid — which
    is everything the console holds, since `quantizeRuns` runs the moment a take
    is analysed and nothing afterwards moves a boundary off it. */
-function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE) {
+function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE, notation = DEFAULT_NOTATION) {
   if (!runs?.length) return null;
   const isTriplet = classifyGriddedBeats(runs);
 
-  const units = buildEngravingUnits(runs, isTriplet);
+  // Past this line everything is in written pitch. Transposing here rather
+  // than at each of the places that draws or exports a note is what keeps
+  // the part consistent with itself: the clef is chosen for the register the
+  // player reads, the ledger lines are the ones actually on the page, and
+  // the staff and the file are built from one set of pitches. The lengths
+  // and the indices are untouched, so a note the reader taps is still the
+  // run it came from.
+  const written = notation.transposes
+    ? runs.map((run) => ({ ...run, note: notation.written(run.note) }))
+    : runs;
+
+  const units = buildEngravingUnits(written, isTriplet);
   if (!units.length) return null;
   const numMeasures = units[units.length - 1].measureIndex + 1;
   const groups = Array.from({ length: numMeasures }, () => []);
@@ -1208,15 +1471,11 @@ function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE) {
     units,
     numMeasures,
     groups,
-    clef: resolveClef(runs, clefMode),
+    clef: resolveClef(written, clefMode),
+    notation,
     runs,
     hasTriplets: isTriplet.some(Boolean),
   };
-}
-
-function noteNameToVexKey(name) {
-  const m = /^([A-G]#?)(-?\d+)$/.exec(name);
-  return `${m[1].toLowerCase()}/${m[2]}`;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1384,16 +1643,11 @@ function xmlEscape(s) {
     .replace(/"/g, '&quot;');
 }
 
-function splitPitch(name) {
-  const m = /^([A-G])(#?)(-?\d+)$/.exec(name);
-  return { step: m[1], alter: m[2] === '#' ? 1 : 0, octave: parseInt(m[3], 10) };
-}
-
 function buildMusicXML(runs, bpm, options = {}) {
-  const model = modelFromRuns(runs, options.clefMode);
+  const model = modelFromRuns(runs, options.clefMode, options.notation);
   if (!model) return null;
 
-  const { units, numMeasures, groups, clef } = model;
+  const { units, numMeasures, groups, clef, notation } = model;
   const title = options.title || 'humusic transcription';
   const today = new Date().toISOString().slice(0, 10);
 
@@ -1410,7 +1664,7 @@ function buildMusicXML(runs, bpm, options = {}) {
   out.push('    </encoding>');
   out.push('  </identification>');
   out.push('  <part-list>');
-  out.push('    <score-part id="P1"><part-name>Transcription</part-name></score-part>');
+  out.push(`    <score-part id="P1"><part-name>${xmlEscape(notation.part.label)}</part-name></score-part>`);
   out.push('  </part-list>');
   out.push('  <part id="P1">');
 
@@ -1420,9 +1674,20 @@ function buildMusicXML(runs, bpm, options = {}) {
     if (m === 0) {
       out.push('      <attributes>');
       out.push(`        <divisions>${XML_DIVISIONS}</divisions>`);
-      out.push('        <key><fifths>0</fifths><mode>major</mode></key>');
+      out.push(`        <key><fifths>${notation.fifths}</fifths><mode>${notation.mode}</mode></key>`);
       out.push('        <time><beats>4</beats><beat-type>4</beat-type></time>');
       out.push(`        <clef><sign>${clef.xmlSign}</sign><line>${clef.xmlLine}</line></clef>`);
+      // Written pitch is what the file carries, so a transposing part has to
+      // say by how much, or every importer reads it as concert pitch and
+      // sounds the music a tone out.
+      if (notation.xmlTranspose) {
+        const { diatonic, chromatic, octaveChange } = notation.xmlTranspose;
+        out.push('        <transpose>');
+        out.push(`          <diatonic>${diatonic}</diatonic>`);
+        out.push(`          <chromatic>${chromatic}</chromatic>`);
+        if (octaveChange) out.push(`          <octave-change>${octaveChange}</octave-change>`);
+        out.push('        </transpose>');
+      }
       out.push('      </attributes>');
       out.push('      <direction placement="above">');
       out.push('        <direction-type>');
@@ -1436,9 +1701,11 @@ function buildMusicXML(runs, bpm, options = {}) {
     }
 
     // Accidentals are per-measure state in common practice notation:
-    // show one on the first altered pitch, and a natural when a
-    // previously altered step/octave returns. This mirrors what
-    // VexFlow draws on screen, keeping file and score identical.
+    // show one on the first pitch that departs from the key signature, and a
+    // natural when a step/octave the measure has altered comes back. What a
+    // measure starts from is the signature itself and not C major — in E♭ an
+    // A♭ is written without an accidental and an A♮ needs one. This mirrors
+    // what VexFlow draws on screen, keeping file and score identical.
     const measureAccidentals = new Map();
 
     for (const i of groups[m]) {
@@ -1462,11 +1729,13 @@ function buildMusicXML(runs, bpm, options = {}) {
       if (u.note === REST) {
         out.push('        <rest/>');
       } else {
-        const { step, alter, octave } = splitPitch(u.note);
+        const { step, alter, octave } = notation.spell(u.note);
         const key = `${step}${octave}`;
-        const inEffect = measureAccidentals.has(key) ? measureAccidentals.get(key) : 0;
+        const inEffect = measureAccidentals.has(key)
+          ? measureAccidentals.get(key)
+          : notation.signatureAlter(step);
         if (alter !== inEffect) {
-          accidental = alter === 1 ? 'sharp' : 'natural';
+          accidental = ACCIDENTAL_NAMES[alter];
           measureAccidentals.set(key, alter);
         }
         out.push('        <pitch>');
@@ -1624,6 +1893,10 @@ const Library = {
       bpm: record.bpm,
       clefMode: record.clefMode,
       voice: record.voice,
+      // A record written before there was a key to write down comes back in
+      // C for piano, which is exactly what it was engraved as at the time.
+      key: record.key || DEFAULT_KEY_ID,
+      part: record.part || DEFAULT_PART_ID,
       runs: record.runs.map(({ note, units }) => ({ note, units })),
     };
 
@@ -1666,10 +1939,10 @@ function slugifyTitle(title) {
 ══════════════════════════════════════════════════════════ */
 function renderScore(runs, container, options = {}) {
   container.innerHTML = '';
-  const model = modelFromRuns(runs, options.clefMode);
+  const model = modelFromRuns(runs, options.clefMode, options.notation);
   if (!model) return null;
 
-  const { units, numMeasures, groups, clef } = model;
+  const { units, numMeasures, groups, clef, notation } = model;
   const VF = window.Vex.Flow;
 
   // One StaveNote per engraving unit, index-aligned with `units`
@@ -1679,14 +1952,30 @@ function renderScore(runs, container, options = {}) {
   const staveNotes = units.map((u) => (
     u.note === REST
       ? new VF.StaveNote({ keys: [clef.restKey], duration: `${u.vfDur}r`, clef: clef.vex })
-      : new VF.StaveNote({ keys: [noteNameToVexKey(u.note)], duration: u.vfDur, clef: clef.vex })
+      : new VF.StaveNote({ keys: [spelledToVexKey(notation.spell(u.note))], duration: u.vfDur, clef: clef.vex })
   ));
 
+  // A signature is drawn at the head of every system, so it costs width there
+  // — up to seven accidentals of it — and that width has to come out of the
+  // measure rather than out of the notes. Measuring it against the same stave
+  // without one is the only reliable way to know how much: the glyphs are not
+  // uniform, and a sharp is wider than a flat. Nothing is measured at all in C,
+  // where the signature is empty and the layout is what it always was.
+  const keySignatureWidth = (() => {
+    if (notation.spec === 'C' || notation.spec === 'Am') return 0;
+    const bare = new VF.Stave(0, 0, 200).addClef(clef.vex).addTimeSignature('4/4');
+    const signed = new VF.Stave(0, 0, 200)
+      .addClef(clef.vex).addKeySignature(notation.spec).addTimeSignature('4/4');
+    bare.format();
+    signed.format();
+    return Math.max(0, signed.getNoteStartX() - bare.getNoteStartX());
+  })();
+
   const containerWidth = Math.max(container.clientWidth, 300);
-  const idealMeasureWidth = 240;
+  const idealMeasureWidth = 240 + keySignatureWidth;
   const usable = containerWidth - 24;
   const measuresPerRow = Math.max(1, Math.min(numMeasures, Math.floor(usable / idealMeasureWidth)));
-  const measureWidth = Math.max(180, Math.floor(usable / measuresPerRow));
+  const measureWidth = Math.max(180 + keySignatureWidth, Math.floor(usable / measuresPerRow));
   const staveHeight = 108;
   const rowCount = Math.ceil(numMeasures / measuresPerRow);
   const totalWidth = measuresPerRow * measureWidth + 24;
@@ -1710,6 +1999,7 @@ function renderScore(runs, container, options = {}) {
     const stave = new VF.Stave(x, y, measureWidth);
     if (col === 0) {
       stave.addClef(clef.vex);
+      stave.addKeySignature(notation.spec);
       if (m === 0) stave.addTimeSignature('4/4');
     }
     if (m === numMeasures - 1) stave.setEndBarType(VF.Barline.type.END);
@@ -1739,25 +2029,31 @@ function renderScore(runs, container, options = {}) {
     const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(true);
     voice.addTickables(notesForMeasure);
 
-    measures.push({ stave, voice, notes: notesForMeasure, tuplets, unitIndices: groups[m] });
+    measures.push({
+      stave, voice, notes: notesForMeasure, tuplets,
+      unitIndices: groups[m],
+      // Only the head of a system carries the signature, so only it pays for it.
+      signed: col === 0,
+    });
   }
 
   // applyAccidentals reads one voice as one measure, which is exactly how the
   // MusicXML export tracks them, so the page and the file agree on every
   // sharp and every courtesy natural.
-  VF.Accidental.applyAccidentals(measures.map((entry) => entry.voice), 'C');
+  VF.Accidental.applyAccidentals(measures.map((entry) => entry.voice), notation.spec);
 
   // Pass 2: beam, format, draw — in that order, and the order is the point.
   // A StaveNote draws its own stem only while it has no beam, and Beam.draw
   // draws stems for the notes it owns. Beaming after the voice is drawn
   // leaves both behind: two stems on every beamed note, plus the flags the
   // note drew when it still thought it was unbeamed.
-  for (const { stave, voice, notes, tuplets } of measures) {
+  for (const { stave, voice, notes, tuplets, signed } of measures) {
     // beam_rests:false (the default) correctly breaks beam groups at rests.
     const beams = VF.Beam.generateBeams(notes);
 
     stave.setContext(ctx).draw();
-    new VF.Formatter().joinVoices([voice]).format([voice], measureWidth - 62);
+    const room = measureWidth - 62 - (signed ? keySignatureWidth : 0);
+    new VF.Formatter().joinVoices([voice]).format([voice], room);
     voice.draw(ctx, stave);
     beams.forEach((b) => b.setContext(ctx).draw());
     // Brackets and the 3 are drawn last: a tuplet is positioned from where
@@ -1800,6 +2096,7 @@ function renderScore(runs, container, options = {}) {
     numMeasures,
     noteCount: units.filter((u) => u.note !== REST).length,
     clef: clef.label,
+    key: notation.label,
     hasTriplets: model.hasTriplets,
   };
 }
@@ -1916,21 +2213,28 @@ class Metronome {
     this.beatDur = 60 / bpm;
     this.noise = createNoiseBuffer(audioCtx, 0.1);
     this.timer = null;
+    this.limit = Infinity;
   }
 
-  start(startTime) {
+  // `beats` bounds the click track, which is what a count-in with the
+  // metronome switched off is: the same track, stopped after four.
+  start(startTime, beats = Infinity) {
     this.nextBeat = startTime;
     this.beat = 0;
+    this.limit = beats;
     this._pump();
     this.timer = setInterval(() => this._pump(), METRONOME_TICK_MS);
   }
 
   _pump() {
-    while (this.nextBeat < this.ctx.currentTime + METRONOME_LOOKAHEAD) {
+    while (this.beat < this.limit && this.nextBeat < this.ctx.currentTime + METRONOME_LOOKAHEAD) {
       this._click(this.nextBeat, this.beat % BEATS_PER_BAR === 0);
       this.nextBeat += this.beatDur;
       this.beat++;
     }
+    // Every click there was ever going to be is already booked on the audio
+    // clock, so the scheduler has nothing left to wake up for.
+    if (this.beat >= this.limit) this.stop();
   }
 
   // Downbeats sit higher and louder so the bar is audible, not just the pulse.
@@ -2297,18 +2601,42 @@ class Player {
 ══════════════════════════════════════════════════════════ */
 const MAX_RECORDING_SECONDS = 180;
 
+/* A bar of clicks before the take. Nobody starts on the beat from a standing
+   start, and everything downstream reads the recording against a grid that
+   begins the instant capture opens — so without a count-in the first note is
+   always slightly late and the take is quantized around that. Four beats is
+   the count a musician is counted in with, and it is one bar of the 4/4 the
+   engraver writes in, so the click never has to change stride when the take
+   begins.
+
+   The clicks are not recorded: capture only opens on beat five. Nor are they
+   optional the way the metronome is — the metronome switch decides whether
+   you play along to a click, while the count-in is how you know where the
+   first beat is, which is a question everyone has to answer. */
+const COUNT_IN_BEATS = 4;
+
+// A moment between the microphone opening and the first click. Audio booked
+// at the exact current time is booked in the past by the time it is heard,
+// and the first click is the one that must not be clipped.
+const COUNT_IN_LEAD_SECONDS = 0.12;
+
 class Recorder {
-  constructor({ onLevel, onTuner, onTick, onAutoStop, bpm, useMetronome }) {
+  constructor({ onLevel, onTuner, onTick, onAutoStop, onCountIn, onStart, bpm, useMetronome }) {
     this.onLevel = onLevel;
     this.onTuner = onTuner;
     this.onTick = onTick;
     this.onAutoStop = onAutoStop;
+    this.onCountIn = onCountIn;
+    this.onStart = onStart;
     this.bpm = bpm;
+    this.beatDur = 60 / bpm;
     this.useMetronome = useMetronome;
     this.chunks = [];
     this.recording = false;
+    this.counting = false;
     this.sampleRate = null;
     this.metronome = null;
+    this.countedBeat = -1;
   }
 
   async start() {
@@ -2338,9 +2666,13 @@ class Recorder {
 
     this.chunks = [];
     this.totalSamples = 0;
-    this.recording = true;
-    this.startedAt = this.audioCtx.currentTime;
+    this.recording = false;
+    this.counting = true;
+    this.countedBeat = -1;
 
+    // The graph is already running through the count-in and its samples are
+    // thrown away, which is what keeps the first sample of the take clean:
+    // a processor connected at the downbeat delivers its first buffer late.
     this.processor.onaudioprocess = (e) => {
       if (!this.recording) return;
       const data = e.inputBuffer.getChannelData(0);
@@ -2351,14 +2683,78 @@ class Recorder {
       }
     };
 
-    // Beat one lands on the moment capture opened, so the click and the
-    // sixteenth grid the take is quantized against are the same grid.
-    if (this.useMetronome) {
-      this.metronome = new Metronome(this.audioCtx, this.bpm);
-      this.metronome.start(this.startedAt);
+    this.countInFrom = this.audioCtx.currentTime + COUNT_IN_LEAD_SECONDS;
+    // Beat one of the take is beat five of the count, exact on the audio
+    // clock — so the click, the count-in and the sixteenth grid the take is
+    // quantized against are one grid, with no seam where capture opens.
+    this.startedAt = this.countInFrom + COUNT_IN_BEATS * this.beatDur;
+
+    this.metronome = new Metronome(this.audioCtx, this.bpm);
+    this.metronome.start(this.countInFrom, this.useMetronome ? Infinity : COUNT_IN_BEATS);
+
+    // Belt and braces on the handover. The frame loop is what normally drives
+    // it and a backgrounded tab stops being given frames, so a timer watches
+    // as well; `_begin` runs once, whichever of them gets there first. The
+    // timer gives up after twice the count it is waiting on, which is the
+    // one case where the audio clock is not merely late but stopped.
+    this._handoverDeadline = performance.now()
+      + (COUNT_IN_LEAD_SECONDS + COUNT_IN_BEATS * this.beatDur) * 2000 + 1000;
+    this._watchHandover();
+    this._countIn();
+  }
+
+  _watchHandover() {
+    const remaining = this.startedAt - this.audioCtx.currentTime;
+    // The click was booked on the audio clock, so the audio clock is what
+    // says when the downbeat is. A clock running behind the wall clock —
+    // throttled, or waiting on an output device that stalled — is worth
+    // waiting for, because starting early would open capture before the beat
+    // the player is listening for has sounded.
+    if (remaining > 0 && performance.now() < this._handoverDeadline) {
+      this._handover = setTimeout(() => this._watchHandover(), Math.min(remaining * 1000, 250) + 20);
+      return;
+    }
+    this._begin();
+  }
+
+  _countIn() {
+    if (!this.counting) return;
+
+    const elapsed = this.audioCtx.currentTime - this.countInFrom;
+    const beat = Math.floor(elapsed / this.beatDur);
+    if (elapsed >= 0 && beat > this.countedBeat && beat < COUNT_IN_BEATS) {
+      this.countedBeat = beat;
+      this.onCountIn?.(beat, COUNT_IN_BEATS);
     }
 
+    if (this.audioCtx.currentTime >= this.startedAt) { this._begin(); return; }
+    this._raf = requestAnimationFrame(() => this._countIn());
+  }
+
+  _begin() {
+    if (!this.counting) return;
+    this.counting = false;
+    clearTimeout(this._handover);
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this.recording = true;
+    // The take is measured from the scheduled downbeat, not from the moment
+    // the flag flipped: that is a frame or two late and the beat was not.
+    // Unless the downbeat has not actually happened — a stalled audio clock
+    // given up on above — in which case measuring from it would run the
+    // timer backwards, and now is the honest origin.
+    this.startedAt = Math.min(this.startedAt, this.audioCtx.currentTime);
+    this.onStart?.();
     this._tick();
+  }
+
+  // Abandoning a count-in before it has become a recording. There is nothing
+  // captured to hand back, which is the difference between this and `stop`.
+  cancel() {
+    if (!this.counting) return;
+    this.counting = false;
+    clearTimeout(this._handover);
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._teardown();
   }
 
   _tick() {
@@ -2379,20 +2775,26 @@ class Recorder {
     this._raf = requestAnimationFrame(() => this._tick());
   }
 
-  stop() {
-    if (!this.recording) return null;
-    this.recording = false;
-    if (this._raf) cancelAnimationFrame(this._raf);
-
+  _teardown() {
     // Silence the click before the context closes, or already-booked
     // clicks fire into a closing context.
     this.metronome?.stop();
     this.metronome = null;
 
+    this.processor.onaudioprocess = null;
     this.processor.disconnect();
     this.source.disconnect();
     this.stream.getTracks().forEach((t) => t.stop());
     this.audioCtx.close();
+  }
+
+  stop() {
+    if (!this.recording) return null;
+    this.recording = false;
+    clearTimeout(this._handover);
+    if (this._raf) cancelAnimationFrame(this._raf);
+
+    this._teardown();
 
     const merged = new Float32Array(this.totalSamples);
     let offset = 0;
@@ -2433,6 +2835,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const scoreTempo  = $('#scoreTempo');
   const metronomeToggle = $('#metronomeToggle');
   const metronomeState  = $('#metronomeState');
+  const keySelect   = $('#keySelect');
+  const instrumentSelect = $('#instrumentSelect');
+  const transposeHint = $('#transposeHint');
+  const countIn     = $('#countIn');
+  const countInLabel = $('#countInLabel');
+  const countDots   = Array.from(document.querySelectorAll('.countin__dot'));
   const toast       = $('#toast');
 
   const editorPanel = $('#editorPanel');
@@ -2480,6 +2888,89 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   /* ══════════════════════════════════════════════════════
+     HOW THE PART IS WRITTEN
+     The key and the instrument are asked for on the capture
+     panel and not on the score, because both are known
+     before a note is played and neither is a revision: they
+     change how the same run list is spelled, engraved and
+     exported, and never what it holds. Which is also why
+     changing either one only redraws.
+  ══════════════════════════════════════════════════════ */
+  const optionFor = (value, label) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+  };
+
+  const fillPicker = (select, items, current) => {
+    let group = null;
+    for (const item of items) {
+      if (!group || group.label !== item.group) {
+        group = document.createElement('optgroup');
+        group.label = item.group;
+        select.append(group);
+      }
+      group.append(optionFor(item.id, item.label));
+    }
+    select.value = current;
+  };
+
+  fillPicker(
+    keySelect,
+    KEYS.map((key) => ({ ...key, group: key.mode === 'minor' ? 'Minor' : 'Major' })),
+    DEFAULT_KEY_ID,
+  );
+  fillPicker(instrumentSelect, PARTS, DEFAULT_PART_ID);
+
+  let scoreNotation = createNotation(DEFAULT_KEY_ID, DEFAULT_PART_ID);
+
+  // What the second line under the instrument says. A part at concert pitch
+  // has nothing to explain; one that transposes has to say what the reader
+  // will actually see, since it is no longer the key they just picked.
+  function describeTransposition() {
+    const { part } = scoreNotation;
+    if (!part.semitones) return '';
+    if (part.fifths) return `Part reads in ${scoreNotation.label}`;
+    const octaves = Math.abs(part.semitones) / 12;
+    return `Part written ${octaves === 1 ? 'an octave' : `${octaves} octaves`} `
+      + `${part.semitones > 0 ? 'higher' : 'lower'}`;
+  }
+
+  function syncNotation() {
+    scoreNotation = createNotation(keySelect.value, instrumentSelect.value);
+    const hint = describeTransposition();
+    transposeHint.textContent = hint;
+    transposeHint.hidden = !hint;
+  }
+
+  const renotate = () => {
+    syncNotation();
+    if (hasScore()) refresh();
+  };
+  keySelect.addEventListener('change', renotate);
+  instrumentSelect.addEventListener('change', renotate);
+  syncNotation();
+
+  /* ══════════════════════════════════════════════════════
+     THE COUNT-IN
+  ══════════════════════════════════════════════════════ */
+  function clearCountIn() {
+    countIn.classList.remove('is-counting');
+    countInLabel.textContent = 'Count-in';
+    countDots.forEach((dot) => dot.classList.remove('is-lit'));
+  }
+
+  function markCountIn(beat, total) {
+    countIn.classList.add('is-counting');
+    countInLabel.textContent = `Count-in ${beat + 1}/${total}`;
+    // Every dot up to this beat, rather than only this one: a frame dropped
+    // under load must not leave a hole in a count that has already happened.
+    countDots.forEach((dot, i) => dot.classList.toggle('is-lit', i <= beat));
+    timerText.textContent = String(total - beat);
+  }
+
+  /* ══════════════════════════════════════════════════════
      SCORE STATE
      One object is the whole score: the runs, the tempo it is
      read at, and which library record it belongs to. Every
@@ -2500,14 +2991,17 @@ document.addEventListener('DOMContentLoaded', () => {
   let recorder = null;
 
   function setIdle() {
-    recordBtn.classList.remove('is-recording');
+    recordBtn.classList.remove('is-recording', 'is-counting');
     recordBtn.setAttribute('aria-label', 'Start recording');
     recordLabel.textContent = 'Record';
     metaState.textContent = 'IDLE';
     levelFill.style.clipPath = 'inset(0 100% 0 0)';
     bpmInput.disabled = false;
     metronomeToggle.disabled = false;
+    keySelect.disabled = false;
+    instrumentSelect.disabled = false;
     centsTrack.classList.remove('is-live');
+    clearCountIn();
     updateTuner(null);
   }
 
@@ -2519,6 +3013,17 @@ document.addEventListener('DOMContentLoaded', () => {
     setIdle();
 
     recordBtn.addEventListener('click', async () => {
+      // Pressing it during the count-in calls the whole thing off. Nothing
+      // has been captured yet, so there is nothing to transcribe and nothing
+      // to throw away but the click track.
+      if (recorder?.counting) {
+        recorder.cancel();
+        recorder = null;
+        timerText.textContent = '00:00';
+        setIdle();
+        return;
+      }
+
       if (recorder?.recording) {
         const captured = recorder.stop();
         setIdle();
@@ -2542,18 +3047,35 @@ document.addEventListener('DOMContentLoaded', () => {
           onTuner: updateTuner,
           onTick: (t) => { timerText.textContent = formatTime(t); },
           onAutoStop: () => recordBtn.click(),
+          onCountIn: markCountIn,
+          // The take proper begins on the fifth click, and the console only
+          // says RECORDING once it has: the state on the masthead is the
+          // answer to whether what you play now is being kept.
+          onStart: () => {
+            recordBtn.classList.remove('is-counting');
+            recordBtn.classList.add('is-recording');
+            recordBtn.setAttribute('aria-label', 'Stop recording');
+            recordLabel.textContent = 'Stop';
+            metaState.textContent = 'RECORDING';
+            centsTrack.classList.add('is-live');
+            clearCountIn();
+            timerText.textContent = '00:00';
+          },
           bpm: clampBpm(bpmInput.value),
           useMetronome: metronomeToggle.checked,
         });
         await recorder.start();
-        recordBtn.classList.add('is-recording');
-        recordBtn.setAttribute('aria-label', 'Stop recording');
-        recordLabel.textContent = 'Stop';
-        metaState.textContent = 'RECORDING';
+        recordBtn.classList.add('is-counting');
+        recordBtn.setAttribute('aria-label', 'Cancel the count-in');
+        recordLabel.textContent = 'Count-in';
+        metaState.textContent = 'COUNT-IN';
         metaRate.textContent = `${(recorder.sampleRate / 1000).toFixed(1)}kHz`;
-        centsTrack.classList.add('is-live');
+        // The tempo is the count's stride and the key is what the take will
+        // be spelled in, so neither can move once the counting has started.
         bpmInput.disabled = true;
         metronomeToggle.disabled = true;
+        keySelect.disabled = true;
+        instrumentSelect.disabled = true;
       } catch (err) {
         console.error(err);
         recorder = null;
@@ -2650,6 +3172,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       info = renderScore(score.runs, scoreContainer, {
         clefMode: clefSelect.value,
+        notation: scoreNotation,
         selected,
         onSelect: select,
       });
@@ -2665,7 +3188,10 @@ document.addEventListener('DOMContentLoaded', () => {
         `${info.noteCount} events`,
       ];
       if (info.hasTriplets) parts.push('triplets');
-      parts.push(info.clef, `${score.bpm} bpm`);
+      parts.push(info.key, info.clef, `${score.bpm} bpm`);
+      // Named only when it is doing something, since for most of the list it
+      // is not: what a trumpet part needs saying about it is that it is one.
+      if (scoreNotation.transposes) parts.push(scoreNotation.part.label);
       if (score.seconds != null) parts.push(`${score.seconds.toFixed(1)}s`);
       scoreMeta.textContent = parts.join(' · ');
     }
@@ -2734,7 +3260,9 @@ document.addEventListener('DOMContentLoaded', () => {
     editorWhere.textContent = `Bar ${bar} · beat ${beat}`;
 
     const isRest = run.note === REST;
-    editorPitch.textContent = isRest ? '—' : run.note.replace('#', '♯');
+    editorPitch.textContent = isRest
+      ? '—'
+      : spelledToLabel(scoreNotation.spell(scoreNotation.written(run.note)));
     editorPitch.parentElement.classList.toggle('is-rest', isRest);
     asNote.setAttribute('aria-pressed', String(!isRest));
     asRest.setAttribute('aria-pressed', String(isRest));
@@ -2853,17 +3381,22 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!hasScore()) return;
     exportBtn.disabled = true;
     try {
-      await exportScore(score);
+      await exportScore(score, scoreNotation);
     } finally {
       refreshControls();
     }
   });
 
-  async function exportScore(source) {
+  /* The notation is passed in rather than read from the pickers, because the
+     library exports a record without opening it: a score saved for trumpet in
+     E♭ has to come out of the catalogue in E♭ for trumpet, whatever the
+     console happens to be set to at the time. */
+  async function exportScore(source, notation) {
     try {
       const xml = buildMusicXML(source.runs, source.bpm, {
         title: source.title || `humusic transcription — ${source.bpm} bpm`,
         clefMode: source.clefMode || clefSelect.value,
+        notation,
       });
       if (!xml) throw new Error('empty score');
       const filename = `humusic-${slugifyTitle(source.title || '')}-${timestampSlug()}.musicxml`;
@@ -2894,6 +3427,8 @@ document.addEventListener('DOMContentLoaded', () => {
         bpm: score.bpm,
         clefMode: clefSelect.value,
         voice: voiceSelect.value,
+        key: keySelect.value,
+        part: instrumentSelect.value,
         runs: score.runs,
       });
       score.id = stored.id;
@@ -2994,7 +3529,7 @@ document.addEventListener('DOMContentLoaded', () => {
     actions.className = 'entry__actions';
     actions.append(
       entryButton('Open', 'btn btn--sm', () => openRecord(record)),
-      entryButton('Export', 'btn btn--sm', () => exportScore(record)),
+      entryButton('Export', 'btn btn--sm', () => exportScore(record, createNotation(record.key, record.part))),
       entryButton('Delete', 'btn btn--sm btn--danger', (button) => confirmDelete(record, button)),
     );
 
@@ -3012,11 +3547,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function describeRecord(record) {
-    const model = modelFromRuns(record.runs, record.clefMode);
+    const notation = createNotation(record.key, record.part);
+    const model = modelFromRuns(record.runs, record.clefMode, notation);
     const parts = [];
     if (model) {
       parts.push(`${model.numMeasures} bar${model.numMeasures === 1 ? '' : 's'}`);
       parts.push(`${model.units.filter((u) => u.note !== REST).length} events`);
+      parts.push(notation.label);
       parts.push(model.clef.label);
     }
     parts.push(`${record.bpm} bpm`, formatSavedAt(record.updatedAt));
@@ -3026,6 +3563,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function openRecord(record) {
     if (record.clefMode && CLEF_MODES.includes(record.clefMode)) clefSelect.value = record.clefMode;
     if (record.voice && INSTRUMENTS[record.voice]) voiceSelect.value = record.voice;
+    if (record.key && KEY_BY_ID[record.key]) keySelect.value = record.key;
+    if (record.part && PART_BY_ID[record.part]) instrumentSelect.value = record.part;
+    syncNotation();
     loadScore({
       runs: record.runs.map(({ note, units }) => ({ note, units })),
       bpm: clampBpm(record.bpm),
@@ -3094,4 +3634,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   refreshLibraryCount();
   refreshControls();
+
+  /* The launch image stays up until the console has actually painted.
+     Left to its own timer the plugin uncovers the view on a schedule it
+     picked before the web layer existed, which on a cold start means the
+     app appears already half-built. */
+  if (isNativeApp()) {
+    const { SplashScreen } = window.Capacitor.Plugins || {};
+    if (SplashScreen) {
+      requestAnimationFrame(() => { SplashScreen.hide().catch(() => {}); });
+    }
+  }
 });
