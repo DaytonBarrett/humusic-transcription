@@ -2208,9 +2208,10 @@ function createNoiseBuffer(ctx, seconds) {
 }
 
 class Metronome {
-  constructor(audioCtx, bpm) {
+  constructor(audioCtx, bpm, volume = 1) {
     this.ctx = audioCtx;
     this.beatDur = 60 / bpm;
+    this.volume = volume;
     this.noise = createNoiseBuffer(audioCtx, 0.1);
     this.timer = null;
     this.limit = Infinity;
@@ -2248,7 +2249,7 @@ class Metronome {
     band.Q.value = 1.4;
 
     const gain = this.ctx.createGain();
-    const peak = isDownbeat ? 0.5 : 0.26;
+    const peak = Math.max(0.0001, (isDownbeat ? 0.5 : 0.26) * this.volume);
     // Ramps are exponential, so they cannot start or land on exactly zero.
     gain.gain.setValueAtTime(0.0001, when);
     gain.gain.exponentialRampToValueAtTime(peak, when + 0.002);
@@ -2621,7 +2622,7 @@ const COUNT_IN_BEATS = 4;
 const COUNT_IN_LEAD_SECONDS = 0.12;
 
 class Recorder {
-  constructor({ onLevel, onTuner, onTick, onAutoStop, onCountIn, onStart, bpm, useMetronome }) {
+  constructor({ onLevel, onTuner, onTick, onAutoStop, onCountIn, onStart, bpm, useMetronome, volume }) {
     this.onLevel = onLevel;
     this.onTuner = onTuner;
     this.onTick = onTick;
@@ -2631,6 +2632,7 @@ class Recorder {
     this.bpm = bpm;
     this.beatDur = 60 / bpm;
     this.useMetronome = useMetronome;
+    this.volume = volume;
     this.chunks = [];
     this.recording = false;
     this.counting = false;
@@ -2689,7 +2691,7 @@ class Recorder {
     // quantized against are one grid, with no seam where capture opens.
     this.startedAt = this.countInFrom + COUNT_IN_BEATS * this.beatDur;
 
-    this.metronome = new Metronome(this.audioCtx, this.bpm);
+    this.metronome = new Metronome(this.audioCtx, this.bpm, this.volume);
     this.metronome.start(this.countInFrom, this.useMetronome ? Infinity : COUNT_IN_BEATS);
 
     // Belt and braces on the handover. The frame loop is what normally drives
@@ -2835,6 +2837,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const scoreTempo  = $('#scoreTempo');
   const metronomeToggle = $('#metronomeToggle');
   const metronomeState  = $('#metronomeState');
+  const metronomeVolume = $('#metronomeVolume');
   const keySelect   = $('#keySelect');
   const instrumentSelect = $('#instrumentSelect');
   const transposeHint = $('#transposeHint');
@@ -2998,6 +3001,7 @@ document.addEventListener('DOMContentLoaded', () => {
     levelFill.style.clipPath = 'inset(0 100% 0 0)';
     bpmInput.disabled = false;
     metronomeToggle.disabled = false;
+    metronomeVolume.disabled = false;
     keySelect.disabled = false;
     instrumentSelect.disabled = false;
     centsTrack.classList.remove('is-live');
@@ -3063,6 +3067,7 @@ document.addEventListener('DOMContentLoaded', () => {
           },
           bpm: clampBpm(bpmInput.value),
           useMetronome: metronomeToggle.checked,
+          volume: Number(metronomeVolume.value) / 100,
         });
         await recorder.start();
         recordBtn.classList.add('is-counting');
@@ -3074,6 +3079,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // be spelled in, so neither can move once the counting has started.
         bpmInput.disabled = true;
         metronomeToggle.disabled = true;
+        metronomeVolume.disabled = true;
         keySelect.disabled = true;
         instrumentSelect.disabled = true;
       } catch (err) {

@@ -96,11 +96,15 @@
           </div>
           <div class="row">
             <dt class="label">Metronome</dt>
-            <dd class="row__v">
+            <dd class="row__v metronome__v">
               <label class="toggle">
                 <input type="checkbox" id="metronomeToggle" checked />
                 <span class="toggle__track" aria-hidden="true"><span class="toggle__knob"></span></span>
                 <span class="toggle__text mono" id="metronomeState">On</span>
+              </label>
+              <label class="metronome__volume">
+                <span class="label metronome__volume-label">Volume</span>
+                <input id="metronomeVolume" type="range" min="0" max="100" step="1" value="50" aria-label="Metronome volume" />
               </label>
             </dd>
           </div>
