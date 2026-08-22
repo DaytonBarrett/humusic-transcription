@@ -1,0 +1,3654 @@
+/* ═══════════════════════════════════════════════════════════
+   humusic — app.js
+   Recorder · monophonic pitch transcriber · engraver · export.
+
+   Pipeline:
+     mic → PCM capture (start/stop) → YIN pitch measurement per
+     tempo-quantized segment → note tracking (the measurements
+     grouped into notes, and only then named) → duration
+     decomposition into ties/measures → VexFlow engraving
+     and MusicXML export off the same intermediate form, so the
+     printed score and the exported file can never disagree.
+   ═══════════════════════════════════════════════════════════ */
+
+'use strict';
+
+const $ = (sel, ctx = document) => ctx.querySelector(sel);
+
+/* ══════════════════════════════════════════════════════════
+   MUSIC MATH
+   Ported from the C++ engine (main.cpp) so the browser and the
+   native transcriber agree on every note name: A4 = 440Hz,
+   equal temperament, nearest MIDI note by rounding.
+══════════════════════════════════════════════════════════ */
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const REST = 'Rest';
+
+// Kept as a float: rounding to a note name is the last step of transcription,
+// never an intermediate one. A held note wanders either side of a semitone
+// boundary, and rounding each measurement in isolation turns that wander into
+// a stream of alternating note names — which is a rhythm error, not a pitch
+// error, because every change of name starts a new note.
+function frequencyToMidi(freq) {
+  return !freq || freq <= 20 ? null : 69 + 12 * Math.log2(freq / 440);
+}
+
+function midiToNoteName(midi) {
+  const midiNote = Math.round(midi);
+  const octave = Math.floor(midiNote / 12) - 1;
+  let noteIndex = midiNote % 12;
+  if (noteIndex < 0) noteIndex += 12;
+  return NOTE_NAMES[noteIndex] + octave;
+}
+
+function frequencyToNote(freq) {
+  const midi = frequencyToMidi(freq);
+  return midi === null ? REST : midiToNoteName(midi);
+}
+
+function noteToMidi(noteName) {
+  const m = /^([A-G]#?)(-?\d+)$/.exec(noteName);
+  if (!m) return null;
+  return (parseInt(m[2], 10) + 1) * 12 + NOTE_NAMES.indexOf(m[1]);
+}
+
+function noteToFrequency(noteName) {
+  const midi = noteToMidi(noteName);
+  return midi === null ? null : 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// Where a note sits on the staff, counted in diatonic steps rather than
+// semitones. C#4 and C4 share a line — an accidental moves the pitch but not
+// the notehead — and it is lines, not semitones, that ledger lines are drawn
+// for, so staff geometry has to be reasoned about in this scale.
+const STAFF_STEPS = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+
+function noteToStaffStep(noteName) {
+  const m = /^([A-G])#?(-?\d+)$/.exec(noteName);
+  return m ? parseInt(m[2], 10) * 7 + STAFF_STEPS[m[1]] : null;
+}
+
+/* ══════════════════════════════════════════════════════════
+   YIN PITCH DETECTOR
+   De Cheveigné & Kawahara's autocorrelation-based estimator —
+   far more resistant to octave errors than a raw FFT peak,
+   which is why it's the standard choice for monophonic tuners.
+   Returns { frequency, clarity } or null when no periodic
+   signal is found (silence / noise / unpitched).
+
+   The lag search is bounded to the musical range rather than
+   running to half the window. Lags longer than the lowest note
+   we accept cannot be a melody — they are room rumble and
+   handling noise, and letting YIN dip into them is one way a
+   held note picks up a stray sub-audible reading mid-sustain.
+══════════════════════════════════════════════════════════ */
+
+// How unlike itself a window may be and still count as pitched at all.
+// Clean tone sits near 0.05; noise and consonants run near 1.
+const MAX_APERIODICITY = 0.35;
+
+// How much worse than the best match anywhere a shorter lag may score and
+// still be taken as the real period. Additive rather than proportional: on a
+// clean tone the best score is near zero, and a percentage of nearly zero
+// would reject the true period for being a hair worse than its own multiple.
+const SUBHARMONIC_ALLOWANCE = 0.06;
+function yinDetectPitch(buffer, sampleRate, minFreq = MIN_PITCH_HZ, maxFreq = MAX_PITCH_HZ) {
+  const half = buffer.length >> 1;
+  if (half < 32) return null;
+
+  const maxTau = Math.min(half - 1, Math.floor(sampleRate / minFreq));
+  const minTau = Math.max(2, Math.ceil(sampleRate / maxFreq));
+  if (maxTau <= minTau) return null;
+
+  const yinBuffer = new Float32Array(maxTau + 1);
+
+  // Step 1+2: difference function, cumulative mean normalized. The running
+  // sum has to start at tau=1 even though the search starts later — the
+  // normalization is defined over every lag up to the current one.
+  yinBuffer[0] = 1;
+  let runningSum = 0;
+  for (let tau = 1; tau <= maxTau; tau++) {
+    let sum = 0;
+    for (let j = 0; j < half; j++) {
+      const delta = buffer[j] - buffer[j + tau];
+      sum += delta * delta;
+    }
+    runningSum += sum;
+    yinBuffer[tau] = runningSum === 0 ? 1 : (sum * tau) / runningSum;
+  }
+
+  /* Step 3: the shortest lag that matches nearly as well as the best one
+     anywhere.
+
+     Both of the obvious rules are wrong, in opposite directions. Taking the
+     first dip under a fixed threshold — the textbook step — fails on anything
+     breathy or wobbly: the dip at the true period never gets under the
+     threshold, the scan runs on into long lags, and whatever it finds down
+     there becomes the answer, an octave or more too low. Taking the deepest
+     dip instead fails on clean tones: a waveform that repeats every T repeats
+     just as exactly every 2T, 3T, 7T, and the normalisation drifts downwards
+     with lag, so the very deepest dip is routinely a high multiple of the
+     period — which is how a clean C5 gets reported as a D2.
+
+     What is actually wanted is the *shortest* period that explains the
+     waveform, with "explains" judged against how well the signal matches
+     itself at all — the best score found anywhere sets the standard, and the
+     first dip that comes within a small margin of it wins. On a clean tone
+     that margin is tight, so only a true period qualifies; on a breathy one
+     the whole curve is raised and the margin rises with it. */
+  let bestValue = Infinity;
+  let deepestTau = minTau;
+  for (let tau = minTau; tau <= maxTau; tau++) {
+    if (yinBuffer[tau] < bestValue) { bestValue = yinBuffer[tau]; deepestTau = tau; }
+  }
+  if (bestValue > MAX_APERIODICITY) return null;
+
+  const ceiling = bestValue + SUBHARMONIC_ALLOWANCE;
+  let tauEstimate = -1;
+  for (let tau = minTau + 1; tau < maxTau; tau++) {
+    if (yinBuffer[tau] > ceiling) continue;
+    if (yinBuffer[tau] > yinBuffer[tau - 1] || yinBuffer[tau] > yinBuffer[tau + 1]) continue;
+    // Settle to the bottom of this dip rather than its leading edge.
+    let settled = tau;
+    while (settled + 1 <= maxTau && yinBuffer[settled + 1] < yinBuffer[settled]) settled++;
+    tauEstimate = settled;
+    break;
+  }
+  // Only when the best match sits right at the edge of the search range,
+  // where there is no dip to find.
+  if (tauEstimate === -1) tauEstimate = deepestTau;
+
+  // Step 4: parabolic interpolation around the minimum for sub-sample precision.
+  const x0 = tauEstimate < 1 ? tauEstimate : tauEstimate - 1;
+  const x2 = tauEstimate + 1 <= maxTau ? tauEstimate + 1 : tauEstimate;
+  let betterTau;
+  if (x0 === tauEstimate) {
+    betterTau = yinBuffer[tauEstimate] <= yinBuffer[x2] ? tauEstimate : x2;
+  } else if (x2 === tauEstimate) {
+    betterTau = yinBuffer[tauEstimate] <= yinBuffer[x0] ? tauEstimate : x0;
+  } else {
+    const s0 = yinBuffer[x0], s1 = yinBuffer[tauEstimate], s2 = yinBuffer[x2];
+    const denom = 2 * (2 * s1 - s2 - s0);
+    betterTau = denom === 0 ? tauEstimate : tauEstimate + (s2 - s0) / denom;
+  }
+
+  return {
+    frequency: sampleRate / betterTau,
+    clarity: 1 - yinBuffer[tauEstimate],
+  };
+}
+
+function rms(buffer, start = 0, end = buffer.length) {
+  let sum = 0;
+  for (let i = start; i < end; i++) sum += buffer[i] * buffer[i];
+  return Math.sqrt(sum / (end - start));
+}
+
+/* ══════════════════════════════════════════════════════════
+   FULL-BUFFER SEGMENTATION
+   Quantizes the whole recording onto a tempo-derived 16th-note
+   grid (same grid unit the C++ engine uses) and runs YIN over
+   each segment.
+
+   The analysis window is centred on the segment and kept short:
+   wide enough to hold several periods of a low note, no wider.
+   A window that spans a note boundary straddles the notes on
+   either side of the onset, and YIN locks onto a bogus long
+   period across the seam — which is how a clean melody picks up
+   spurious very low notes and late-sounding onsets.
+
+   What comes out is one *measurement* per 16th, not one note
+   name per 16th. Naming happens later, per note, once the
+   measurements have been grouped.
+══════════════════════════════════════════════════════════ */
+
+// Voicing. The floor is absolute — a quiet room never reaches it — but the
+// working threshold also scales with the take, so a soft recording is not
+// read as silence and a loud one does not promote its own room tone into
+// notes. The hysteresis matters more than either number: a note that has
+// started stays voiced down to a far lower level than it took to start it.
+// Without that, the natural decay of a held note dips under a fixed floor
+// and punches a rest through the middle of the note, splitting it in two.
+const SILENCE_RMS = 0.015;
+const VOICED_PEAK_RATIO = 0.06;
+const RELEASE_RATIO = 0.45;
+
+// C2 sits below a bass singer's lowest note and C7 above a soprano's top, so
+// a reading outside this range is a detection error rather than a melody.
+// The floor matters more than it looks: almost every way a pitch tracker
+// fails produces a reading that is too low, never too high, so the narrower
+// the floor the fewer of those failures survive to be written down.
+const MIN_PITCH_MIDI = 36;
+const MAX_PITCH_MIDI = 96;
+const MIN_PITCH_HZ = 440 * Math.pow(2, (MIN_PITCH_MIDI - 69) / 12);
+const MAX_PITCH_HZ = 440 * Math.pow(2, (MAX_PITCH_MIDI - 69) / 12);
+
+/* The pitch window is a fixed length, deliberately not tied to the note grid.
+   It used to be "the frame, widened to at least 46ms", which was 93ms while a
+   frame was a sixteenth — and then silently halved to 46ms when the grid moved
+   to twelfths of a beat for triplets. That halving is what started the octave
+   errors: at 46ms the difference function spans barely two periods of a low
+   note, the dip at the true period is too shallow to be picked out, and the
+   search runs on into long lags where the cumulative-mean normalisation is
+   biased downwards — reporting a period several times too long, which is a
+   note an octave or two below the one that was sung.
+
+   90ms is long enough to hold several periods of anything in range. Note
+   boundaries are not read from this window at all: they come from the onset
+   detector below, which runs at its own much finer resolution. */
+const PITCH_WINDOW_SECONDS = 0.09;
+
+/* Pitch detection does not need 44kHz. Melody fundamentals stop below 2.1kHz,
+   so the signal is decimated to about 22kHz first. YIN costs the square of
+   the window in samples, so halving the rate quarters the work — which is
+   what pays for the longer, more reliable window. A low-pass has to precede
+   the decimation anyway, and it helps: stripping the top octaves leaves the
+   difference function a cleaner waveform to match against itself. */
+const PITCH_RATE_TARGET = 22050;
+
+// Rumble, handling noise and mains hum all live below the lowest note we
+// accept, and all of it is periodic enough for a pitch tracker to bite on.
+const RUMBLE_CUTOFF_HZ = 50;
+
+function prepareSignal(samples, sampleRate) {
+  /* High pass, in two passes. One pole rolls off at 6dB per octave, which
+     over the octave between rumble and the lowest note we accept is barely
+     3dB — nothing. Cascading two doubles that slope, so handling noise and
+     mains hum are pushed well down while C2 loses only a few dB. It matters
+     because rumble is steady while a held note decays: leave it in, and the
+     tail of a long note ends up quieter than the noise under it, at which
+     point the note is judged to have stopped and the score gets a rest that
+     nobody played. */
+  const dt = 1 / sampleRate;
+  const rc = 1 / (2 * Math.PI * RUMBLE_CUTOFF_HZ);
+  const alpha = rc / (rc + dt);
+  const cleaned = new Float32Array(samples.length);
+  for (let pass = 0; pass < 2; pass++) {
+    const source = pass === 0 ? samples : cleaned;
+    let previousIn = 0;
+    let previousOut = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const x = source[i];
+      previousOut = alpha * (previousOut + x - previousIn);
+      previousIn = x;
+      cleaned[i] = previousOut;
+    }
+  }
+
+  const factor = Math.max(1, Math.round(sampleRate / PITCH_RATE_TARGET));
+  if (factor === 1) return { data: cleaned, rate: sampleRate };
+
+  // Triangular-weighted average across the decimation span: a cheap low-pass
+  // whose stop band sits where the new Nyquist will be, so nothing folds back.
+  const length = Math.floor(cleaned.length / factor);
+  const data = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    const centre = i * factor;
+    let sum = 0;
+    let weight = 0;
+    for (let k = -factor; k <= factor; k++) {
+      const index = centre + k;
+      if (index < 0 || index >= cleaned.length) continue;
+      const w = factor + 1 - Math.abs(k);
+      sum += cleaned[index] * w;
+      weight += w;
+    }
+    data[i] = weight ? sum / weight : 0;
+  }
+  return { data, rate: sampleRate / factor };
+}
+
+/* One entry per grid frame. `midi` is a float — or null where nothing pitched
+   was found — and `strong`/`audible` are the two sides of the voicing
+   hysteresis: `strong` is loud enough to begin a note, `audible` only loud
+   enough to keep one going. `filled` marks a frame bridged across a dropout
+   rather than measured. */
+function measureFrames(signal, framesPerSecond) {
+  const { data, rate } = signal;
+  const frameSamples = Math.max(1, Math.round(rate / framesPerSecond));
+  const count = Math.floor(data.length / frameSamples);
+  const frames = new Array(count);
+
+  let peak = 0;
+  for (let i = 0; i < count; i++) {
+    const energy = rms(data, i * frameSamples, (i + 1) * frameSamples);
+    if (energy > peak) peak = energy;
+    frames[i] = { energy, midi: null, voiced: false, filled: false, audible: false, strong: false };
+  }
+
+  const onThreshold = Math.max(SILENCE_RMS, peak * VOICED_PEAK_RATIO);
+  const offThreshold = onThreshold * RELEASE_RATIO;
+  const window = Math.round(rate * PITCH_WINDOW_SECONDS);
+
+  for (let i = 0; i < count; i++) {
+    // Below the release threshold nothing can be voiced however it sounds,
+    // so there is no reason to pay for YIN over silence.
+    if (frames[i].energy < offThreshold) continue;
+    frames[i].audible = true;
+    frames[i].strong = frames[i].energy >= onThreshold;
+
+    const centre = i * frameSamples + frameSamples / 2;
+    let start = Math.round(centre - window / 2);
+    let end = start + window;
+    if (start < 0) { end -= start; start = 0; }
+    if (end > data.length) { start -= end - data.length; end = data.length; }
+    start = Math.max(0, start);
+
+    const result = yinDetectPitch(data.subarray(start, end), rate);
+    const midi = result ? frequencyToMidi(result.frequency) : null;
+    if (midi !== null && midi >= MIN_PITCH_MIDI && midi <= MAX_PITCH_MIDI) frames[i].midi = midi;
+  }
+
+  let sounding = false;
+  for (const frame of frames) {
+    frame.voiced = frame.midi !== null && (sounding ? frame.audible : frame.strong);
+    sounding = frame.voiced;
+  }
+
+  return frames;
+}
+
+/* ══════════════════════════════════════════════════════════
+   ONSETS
+   Where notes actually begin, measured on its own fine hop
+   rather than read off the note grid.
+
+   Rhythm is only ever as accurate as the moment a note is
+   judged to start, and the pitch window cannot supply that: it
+   is 90ms long, so around a note change it sees both notes at
+   once and the change appears wherever the mixture happens to
+   tip. That is a whole grid frame of error at ordinary tempos —
+   a third of a sixteenth — and it lands as a note written on
+   the wrong part of the beat.
+
+   Energy has no such problem. A struck or tongued or sung
+   attack is a step change in level, locatable to a few
+   milliseconds, so onsets are found there and the note
+   boundaries are pulled onto them.
+══════════════════════════════════════════════════════════ */
+const ONSET_HOP_SECONDS = 0.004;
+const ONSET_WINDOW_SECONDS = 0.02;
+/* An attack has to stand out from the quietest moment just before it by this
+   much, in nepers of level — a bit more than doubling.
+
+   Size alone cannot say what a rise is. Measured across a range of attacks
+   and of breath dips deep enough to matter, the two overlap completely —
+   re-articulations rising by 0.4 to 0.8, dips inside a single held note by
+   0.3 to 0.8 — so no threshold on loudness separates them, and picking one
+   only chooses which mistake to make. What separates them is shape, which
+   ONSET_SETTLE_SECONDS below tests. This threshold is left low, as a cheap
+   first filter on anything that is not a rise at all.
+
+   Measured against the recent trough rather than the previous hop, and that
+   is the whole trick. A level window has to be long enough to be a stable
+   measure of level, which makes it far longer than the hop between windows,
+   so consecutive windows overlap and a sharp attack is spread across several
+   of them. Hop to hop, even a hard-tongued note rises by only a fraction of
+   what it really rises by — measure it that way and no threshold separates a
+   genuine attack from ordinary wobble. Against the trough, the whole rise is
+   in one number. */
+const ONSET_RISE = 0.3;
+const ONSET_LOOKBACK_SECONDS = 0.03;
+
+/* An attack is a step; a swell is a ramp. That is the difference the level
+   alone cannot show, and it is visible a moment afterwards: a struck or
+   tongued note has fully arrived within a few tens of milliseconds and is
+   already decaying, while a note swelling back out of a dip is still on its
+   way up. So a rise only counts as an attack if it has finished rising. */
+const ONSET_SETTLE_SECONDS = 0.04;
+const ONSET_STILL_CLIMBING = 1.15;
+// Two attacks closer together than this are one attack seen twice.
+const MIN_ONSET_GAP_SECONDS = 0.05;
+
+function detectOnsets(signal) {
+  const { data, rate } = signal;
+  const hop = Math.max(1, Math.round(rate * ONSET_HOP_SECONDS));
+  const window = Math.max(hop, Math.round(rate * ONSET_WINDOW_SECONDS));
+  const count = Math.floor((data.length - window) / hop);
+  if (count < 4) return [];
+
+  const level = new Float32Array(count);
+  for (let i = 0; i < count; i++) level[i] = rms(data, i * hop, i * hop + window);
+
+  let loudest = 0;
+  for (let i = 0; i < count; i++) loudest = Math.max(loudest, level[i]);
+  if (loudest <= 0) return [];
+  const floor = Math.max(SILENCE_RMS, loudest * VOICED_PEAK_RATIO) * RELEASE_RATIO;
+
+  const lookback = Math.max(2, Math.round(ONSET_LOOKBACK_SECONDS / ONSET_HOP_SECONDS));
+  const minGap = Math.max(1, Math.round(MIN_ONSET_GAP_SECONDS / ONSET_HOP_SECONDS));
+  const settle = Math.max(1, Math.round(ONSET_SETTLE_SECONDS / ONSET_HOP_SECONDS));
+
+  const onsets = [];
+  let lastIndex = -minGap;
+  for (let i = lookback; i < count; i++) {
+    if (level[i] < floor || i - lastIndex < minGap) continue;
+
+    let trough = i - lookback;
+    for (let k = i - lookback; k < i; k++) if (level[k] < level[trough]) trough = k;
+    if (Math.log(level[i] + 1e-9) - Math.log(level[trough] + 1e-9) < ONSET_RISE) continue;
+
+    // Still climbing a moment later? Then this is a swell, not an attack.
+    if (level[Math.min(count - 1, i + settle)] > level[i] * ONSET_STILL_CLIMBING) continue;
+
+    // Booked at the trough: that is the moment the sound turned round, and
+    // the moment a listener would call the start of the note.
+    onsets.push((trough * hop + window / 2) / rate);
+    lastIndex = i;
+  }
+  return onsets;
+}
+
+/* ══════════════════════════════════════════════════════════
+   NOTE TRACKING
+   Groups the per-frame measurements into notes. This is the step
+   that decides rhythm: every group boundary is a new note, so
+   anything that fragments a group writes a held note out as a
+   run of short ones.
+
+   Four defences, in order — a median filter for single-frame
+   slips, gap filling for momentary dropouts, a pitch reference
+   with hysteresis, and a probationary period before any change
+   of note is believed.
+══════════════════════════════════════════════════════════ */
+
+// How far the pitch must move from where the note has been sitting before
+// it counts as a different note. Comfortably wider than vibrato (±50 cents
+// is a wide operatic wobble) and comfortably inside a semitone.
+const NEW_NOTE_SEMITONES = 0.7;
+
+/* A change of pitch is put on probation rather than acted on. It has to hold
+   for this long, and hold at a consistent new pitch, before the note is
+   ended; if the reading comes back to where it was first, those frames are
+   folded into the sustain as though nothing had happened.
+
+   This is the difference between measuring and listening. A voice holding a
+   note throws off a wrong reading now and then — the window catches a
+   consonant, the vibrato reaches its extreme, the tracker slips — and each
+   one, taken at face value, ends the note and starts another. A person
+   hearing the same thing does not hear three notes; they hear one note and a
+   moment of noise. Sixty milliseconds is short enough that every real note
+   survives it — a sixteenth at 240bpm is still longer — and long enough that
+   a slip of a frame or two never becomes a note of its own. */
+const MIN_NOTE_SECONDS = 0.06;
+
+// No change of note is ever believed on the strength of a single frame.
+const MIN_PROBATION_FRAMES = 2;
+
+
+// How far a boundary may be moved to land on a detected attack.
+const ONSET_SNAP_FRAMES = 1.6;
+
+// A stretch this long with sound but no measurable pitch is unpitched
+// material in its own right, not a dropout to be papered over. It is a
+// duration rather than a frame count because the frame is now a twelfth of
+// a beat: at 200bpm that is 25ms, and two frames of it would be far too
+// short a bridge to repair anything.
+const MAX_DROPOUT_SECONDS = 0.08;
+
+function median(values) {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[sorted.length >> 1];
+}
+
+// Where a note is sitting, in MIDI floats. The median fixes the centre and
+// shrugs off a stray frame; averaging the frames near it then recovers the
+// precision a median discards — vibrato is symmetric about the pitch, so the
+// frames either side of centre carry real information, and on an even number
+// of frames a bare median also leans on the upper of the two middle values.
+// That lean is enough to name a note a semitone sharp when it only had four
+// frames to go on.
+function centrePitch(pitches) {
+  const centre = median(pitches);
+  let sum = 0;
+  let n = 0;
+  for (const p of pitches) {
+    if (Math.abs(p - centre) < 0.5) { sum += p; n++; }
+  }
+  return n ? sum / n : centre;
+}
+
+// Three-wide median over the pitch track. An octave slip or a transient at
+// the attack shows up as one frame unlike both its neighbours, and a median
+// removes exactly that while leaving real note boundaries where they are —
+// at a boundary the window reads (old, new, new), whose median is new.
+function smoothPitch(frames) {
+  const raw = frames.map((f) => (f.voiced ? f.midi : null));
+  for (let i = 1; i < frames.length - 1; i++) {
+    if (raw[i - 1] === null || raw[i] === null || raw[i + 1] === null) continue;
+    frames[i].midi = median([raw[i - 1], raw[i], raw[i + 1]]);
+  }
+}
+
+// Bridges gaps where the note went on sounding but no pitch came back — a
+// consonant, a bow change, noise smeared over the measurement. Energy is the
+// test, and it is the honest one: if the sound continued at the same pitch
+// either side, the note continued. A gap that actually falls silent is left
+// alone, because a 16th of silence is a rest and the score should show it.
+function fillDropouts(frames, maxFillFrames) {
+  for (let i = 1; i < frames.length; i++) {
+    if (frames[i].voiced) continue;
+    let end = i;
+    let audible = true;
+    while (end < frames.length && !frames[end].voiced) {
+      if (!frames[end].audible) audible = false;
+      end++;
+    }
+
+    const before = frames[i - 1];
+    const after = frames[end];
+    if (audible && end - i <= maxFillFrames && before.voiced && after?.voiced) {
+      // Same pitch either side: the note went on and the reading dropped out.
+      // Different pitches either side: the note changed, and the window —
+      // being far longer than a frame — saw both at once and resolved
+      // neither. Either way the sound never stopped, so neither is a rest.
+      // The changed case is handed to the note that follows, and left
+      // unmarked so a detected attack inside it still counts.
+      const sustained = Math.abs(before.midi - after.midi) < NEW_NOTE_SEMITONES;
+      for (let k = i; k < end; k++) {
+        frames[k].voiced = true;
+        frames[k].filled = sustained;
+        frames[k].midi = sustained ? (before.midi + after.midi) / 2 : after.midi;
+      }
+    }
+    i = end - 1;
+  }
+}
+
+function trackNotes(frames, frameDur, onsetTimes) {
+  // Probation lasts at least a sixteenth of the grid, whatever the tempo.
+  // The shortest note the score can express is a sixteenth, so an excursion
+  // shorter than one cannot be a note however convinced the reading is —
+  // there would be no way to write it down even if it were real.
+  const sixteenthFrames = UNITS_PER_QUARTER / 4;
+  const confirmFrames = Math.max(sixteenthFrames, Math.round(MIN_NOTE_SECONDS / frameDur));
+  const onsetFrames = onsetTimes.map((time) => time / frameDur);
+  const attackFrames = new Set(onsetFrames.map((frame) => Math.round(frame)));
+
+  const pitchesIn = (from, to) => {
+    const out = [];
+    for (let i = from; i < to; i++) {
+      if (frames[i].voiced && frames[i].midi !== null) out.push(frames[i].midi);
+    }
+    return out;
+  };
+
+  // Pull a boundary onto a detected attack when one is close by. The pitch
+  // window is wider than a frame, so a change of note is measured a frame or
+  // so late; the attack is where it really happened.
+  const snapToOnset = (frame) => {
+    let best = frame;
+    let closest = ONSET_SNAP_FRAMES;
+    for (const onset of onsetFrames) {
+      const distance = Math.abs(onset - frame);
+      if (distance <= closest) { closest = distance; best = Math.round(onset); }
+    }
+    return best;
+  };
+
+  const segments = [];
+  let start = null;
+  let startedByAttack = false;
+  let probationStart = null;
+
+  const close = (end) => {
+    if (start !== null && end > start) segments.push({ start, end, byAttack: startedByAttack });
+    start = null;
+  };
+
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+
+    if (!frame.voiced) { close(i); probationStart = null; continue; }
+
+    if (start === null) {
+      start = i;
+      startedByAttack = attackFrames.has(i);
+      probationStart = null;
+      continue;
+    }
+
+    /* A fresh attack ends the note whatever the pitch is doing — the only
+       way two notes at the same pitch stay two notes.
+       What keeps this from splitting sustains is the onset detector itself,
+       and specifically that it measures a rise against the level 30ms
+       earlier. Re-articulating a pitch means stopping it and starting it
+       again, so the whole rise happens inside those 30ms and shows up in
+       full. A breath catch, a swell or a bow change inside a held note
+       recovers over a tenth of a second or more, so at any moment only a
+       fraction of the rise is inside the window and it never reaches the
+       threshold. Sharpness is what separates them, not depth. */
+    if (attackFrames.has(i) && !frame.filled) {
+      close(i);
+      start = i;
+      startedByAttack = true;
+      probationStart = null;
+      continue;
+    }
+
+    const settled = pitchesIn(start, probationStart === null ? i : probationStart);
+    const reference = settled.length ? centrePitch(settled) : frame.midi;
+
+    if (Math.abs(frame.midi - reference) < NEW_NOTE_SEMITONES) {
+      // Back where it was. Anything on probation was a slip in the reading,
+      // not a note — it belongs to the sustain, and nothing is written down
+      // about it.
+      probationStart = null;
+      continue;
+    }
+
+    if (probationStart === null) {
+      probationStart = i;
+    } else {
+      // Still away, but away somewhere else — it is wandering, not settling
+      // on a new note, so the probation restarts from here.
+      const wandering = pitchesIn(probationStart, i);
+      if (wandering.length && Math.abs(frame.midi - centrePitch(wandering)) >= NEW_NOTE_SEMITONES) {
+        probationStart = i;
+      }
+    }
+
+    /* Commit when the excursion has lasted long enough to be a note — or
+       sooner, once it is clear it is not coming back. Waiting the full
+       sixteenth every time swallows real sixteenths in a legato line, where
+       there is no attack to shortcut the wait and the long pitch window
+       leaves only two clean frames of a three-frame note. Asking whether the
+       pitch returns settles it: a slip goes back where it came from and is
+       absorbed, a note does not and is written down. */
+    const probation = i + 1 - probationStart;
+    const next = frames[i + 1];
+    const comesBack = !!next && next.voiced && next.midi !== null
+      && Math.abs(next.midi - reference) < NEW_NOTE_SEMITONES;
+
+    if (probation >= confirmFrames || (probation >= MIN_PROBATION_FRAMES && !comesBack)) {
+      const boundary = Math.min(i, Math.max(start + 1, snapToOnset(probationStart)));
+      close(boundary);
+      start = boundary;
+      startedByAttack = false;
+      probationStart = null;
+    }
+  }
+  close(frames.length);
+
+  /* A one-frame segment is not a note. It is the frame where the pitch window
+     lay across two notes and resolved neither, reading somewhere between
+     them — and left alone it is written down as a real note of its own, a
+     stray chromatic sixteenth wedged into every note change. It belongs to
+     the note arriving, since that is what it was turning into. */
+  const kept = [];
+  for (let s = 0; s < segments.length; s++) {
+    const segment = segments[s];
+    if (segment.end - segment.start >= MIN_PROBATION_FRAMES) { kept.push(segment); continue; }
+    const next = segments[s + 1];
+    const previous = kept[kept.length - 1];
+    if (next && next.start === segment.end) next.start = segment.start;
+    else if (previous && previous.end === segment.start) previous.end = segment.end;
+    else kept.push(segment);
+  }
+
+  const runs = [];
+  const pushRest = (units) => {
+    const last = runs[runs.length - 1];
+    if (last && last.note === REST) last.units += units;
+    else if (units > 0) runs.push({ note: REST, units, startedByOnset: false });
+  };
+
+  let cursor = 0;
+  for (const segment of kept) {
+    pushRest(segment.start - cursor);
+    // The note is named once, from the middle of everything measured across
+    // it — so a note that drifts or wobbles still resolves to the single
+    // pitch it was heard as, rather than to whichever side of a boundary each
+    // individual frame happened to land on.
+    const pitches = pitchesIn(segment.start, segment.end);
+    if (pitches.length) {
+      runs.push({
+        note: midiToNoteName(centrePitch(pitches)),
+        units: segment.end - segment.start,
+        startedByOnset: segment.byAttack,
+      });
+    } else {
+      pushRest(segment.end - segment.start);
+    }
+    cursor = segment.end;
+  }
+  pushRest(frames.length - cursor);
+
+  return runs;
+}
+
+// Two runs that were split on pitch but round to the same name were never
+// two notes — the reference simply drifted far enough to trip the boundary
+// inside one long note. Runs that begin on a real attack are kept apart:
+// that is a repeated note, and it has to stay two notes on the page.
+function mergeUnarticulatedRuns(runs) {
+  const merged = [];
+  for (const run of runs) {
+    const last = merged[merged.length - 1];
+    if (last && last.note === run.note && !run.startedByOnset) last.units += run.units;
+    else merged.push({ ...run });
+  }
+  return merged;
+}
+
+/* ══════════════════════════════════════════════════════════
+   THE RHYTHMIC GRID
+   One unit is a twelfth of a quarter note. Twelve is the
+   smallest number that divides cleanly by both 4 and 3, so the
+   same grid measures a sixteenth (3 units) and an eighth-note
+   triplet (4 units) exactly, with no rounding either way. A
+   sixteenth grid cannot express a triplet at all: a third of a
+   beat is 1.33 sixteenths, so triplets were previously rounded
+   into a limping 2+1 or 1+2 and written as straight sixteenths.
+══════════════════════════════════════════════════════════ */
+const UNITS_PER_QUARTER = 12;
+const UNITS_PER_BEAT = UNITS_PER_QUARTER; // 4/4 throughout, so a beat is a quarter
+const BINARY_OFFSETS = [0, 3, 6, 9];      // sixteenths within a beat
+const TRIPLET_OFFSETS = [0, 4, 8];        // eighth-note triplets within a beat
+
+// A beat is only read as a triplet when what was played fits the triplet grid
+// better than the straight one, by this much per onset. The margin has to be
+// small: the two grids are never far apart. A perfect triplet sits one unit
+// off the straight grid at each onset, so that one unit is the entire signal,
+// and a measured onset is itself good to about a unit — the pitch window is
+// wider than a frame, so a note change smears across the frame that straddles
+// it. Demand much more than this and no real triplet is ever found; demand
+// much less and straight rhythm sprouts tuplets on measurement noise.
+const TRIPLET_MARGIN = 0.35;
+
+// And the fit has to be good in absolute terms, not merely better. Straight
+// sixteenths miss the triplet grid by an average of over a unit, so this
+// alone rejects them, and it keeps a beat whose onsets are scattered from
+// being read as a triplet just because straight fits it even worse.
+const TRIPLET_MAX_ERROR = 1;
+
+function nearestOffsetError(position, offsets) {
+  let best = Infinity;
+  for (const offset of offsets) best = Math.min(best, Math.abs(position - offset));
+  return best;
+}
+
+/* Returns [{ note, units }] — one entry per note, `units` in twelfths of a
+   quarter. Runs rather than a flat per-frame array, because two adjacent
+   notes at the same pitch are a distinction a flat array cannot carry. */
+function analyzeRecording(samples, sampleRate, bpm) {
+  const frameDur = 60 / bpm / UNITS_PER_QUARTER;
+
+  // Filtered and decimated once, then used for everything: the pitch windows,
+  // the level readings and the onsets all see the same signal.
+  const signal = prepareSignal(samples, sampleRate);
+
+  const frames = measureFrames(signal, 1 / frameDur);
+  smoothPitch(frames);
+  fillDropouts(frames, Math.max(1, Math.round(MAX_DROPOUT_SECONDS / frameDur)));
+
+  return mergeUnarticulatedRuns(trackNotes(frames, frameDur, detectOnsets(signal)));
+}
+
+/* ══════════════════════════════════════════════════════════
+   BEAT CLASSIFICATION
+   Decides, beat by beat, whether what was played divides that
+   beat in two or in three, by asking which grid the onsets
+   inside it actually landed on. Then it snaps them to whichever
+   grid won, so the engraver gets exact durations rather than
+   the near-misses a performance produces.
+
+   The decision is per beat rather than per piece because that
+   is how triplets occur — a bar of straight eighths with one
+   triplet beat in it is ordinary music, and a piece-wide
+   setting could not write it down.
+══════════════════════════════════════════════════════════ */
+function classifyBeats(runs) {
+  const totalUnits = runs.reduce((sum, run) => sum + run.units, 0);
+  const beatCount = Math.max(1, Math.ceil(totalUnits / UNITS_PER_BEAT));
+  const isTriplet = new Array(beatCount).fill(false);
+
+  // Onsets are the run boundaries: where one note stops and the next starts.
+  // The very first onset is the downbeat and tells us nothing about how the
+  // beat is divided, so it is not evidence either way.
+  const onsets = [];
+  let at = 0;
+  for (const run of runs) {
+    if (at > 0) onsets.push(at);
+    at += run.units;
+  }
+
+  for (let beat = 0; beat < beatCount; beat++) {
+    const start = beat * UNITS_PER_BEAT;
+    const inside = onsets.filter((o) => o > start && o < start + UNITS_PER_BEAT);
+    if (!inside.length) continue; // nothing subdivides this beat
+
+    let binaryError = 0;
+    let tripletError = 0;
+    for (const onset of inside) {
+      const position = onset - start;
+      binaryError += nearestOffsetError(position, BINARY_OFFSETS);
+      tripletError += nearestOffsetError(position, TRIPLET_OFFSETS);
+    }
+    isTriplet[beat] = tripletError / inside.length < TRIPLET_MAX_ERROR
+      && tripletError + TRIPLET_MARGIN * inside.length < binaryError;
+  }
+
+  return isTriplet;
+}
+
+// Pulls every run boundary onto the grid its beat was read as — the last one
+// included, since a take that stops mid-grid otherwise leaves a length no
+// duration can express, and the leftover silently vanishes from the bar.
+//
+// Runs that collapse to nothing in the process are dropped: a sliver between
+// two onsets that snap to the same place was never a note. If that leaves
+// nothing at all, the take was shorter than a single grid step, and one step
+// of the note that was there beats showing an empty score.
+function snapRunsToGrid(runs, isTriplet) {
+  const gridFor = (position) => {
+    const beat = Math.floor(position / UNITS_PER_BEAT);
+    const start = beat * UNITS_PER_BEAT;
+    const offsets = isTriplet[beat] ? TRIPLET_OFFSETS : BINARY_OFFSETS;
+    // The next downbeat is always a candidate: it closes the last subdivision.
+    return offsets.map((offset) => start + offset).concat(start + UNITS_PER_BEAT);
+  };
+
+  const snapPosition = (position) => {
+    let best = null;
+    let bestError = Infinity;
+    for (const candidate of gridFor(position)) {
+      const error = Math.abs(position - candidate);
+      if (error < bestError) { best = candidate; bestError = error; }
+    }
+    return best;
+  };
+
+  const snapped = [];
+  let at = 0;
+  let cursor = 0;
+  for (const run of runs) {
+    at += run.units;
+    const end = snapPosition(at);
+    if (end > cursor) {
+      snapped.push({ note: run.note, units: end - cursor, startedByOnset: run.startedByOnset });
+      cursor = end;
+    }
+  }
+
+  if (!snapped.length) {
+    const sounded = runs.find((run) => run.note !== REST) || runs[0];
+    return [{ note: sounded.note, units: BINARY_OFFSETS[1], startedByOnset: false }];
+  }
+  return snapped;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CLEF SELECTION
+   A fixed treble clef pushes a bass line or a low male voice
+   far below the staff, where it reads as a thicket of ledger
+   lines. So the clef is chosen from the line itself — but by
+   counting the ledger lines each staff would actually cost,
+   which is the thing a reader pays for, rather than by asking
+   which staff's centre line the median pitch sits nearer.
+
+   Measuring from the centre lines is what put treble melodies
+   on a bass clef. Those centres are B4 and D3, so the midpoint
+   between them lands exactly on middle C, and any line whose
+   median sits at or below C4 tipped to bass — even a melody
+   running C4 up to A4, which is treble music by any reading.
+   Centre distance also ignores range entirely: it cannot tell
+   a line that sits on middle C from one that merely passes
+   through it on the way up.
+══════════════════════════════════════════════════════════ */
+const CLEFS = {
+  // bottomLine/topLine are the outer staff lines in diatonic steps — E4 and
+  // F5 for treble, G2 and A3 for bass. restKey places rests in the middle of
+  // that staff, which is where a copyist centres them.
+  treble: {
+    vex: 'treble', label: 'treble', restKey: 'b/4', xmlSign: 'G', xmlLine: 2,
+    bottomLine: noteToStaffStep('E4'), topLine: noteToStaffStep('F5'),
+  },
+  bass: {
+    vex: 'bass', label: 'bass', restKey: 'd/3', xmlSign: 'F', xmlLine: 4,
+    bottomLine: noteToStaffStep('G2'), topLine: noteToStaffStep('A3'),
+  },
+};
+
+// Ledger lines a note needs on a given staff. A note in the space beyond a
+// ledger line still needs that line drawn, which is why this floors the
+// half-steps rather than rounding them.
+function ledgerLines(step, clef) {
+  if (step > clef.topLine) return Math.floor((step - clef.topLine) / 2);
+  if (step < clef.bottomLine) return Math.floor((clef.bottomLine - step) / 2);
+  return 0;
+}
+
+const AUTO_BASS_MARGIN = 2;
+
+function chooseClef(runs) {
+  let trebleCost = 0;
+  let bassCost = 0;
+  let totalUnits = 0;
+
+  // Each note counts for its length, so a line is judged by where it
+  // actually sits rather than by a flurry of passing notes — and a one-16th
+  // octave slip cannot drag the whole staff with it.
+  for (const run of runs) {
+    if (run.note === REST) continue;
+    const step = noteToStaffStep(run.note);
+    if (step === null) continue;
+    trebleCost += ledgerLines(step, CLEFS.treble) * run.units;
+    bassCost += ledgerLines(step, CLEFS.bass) * run.units;
+    totalUnits += run.units;
+  }
+  if (!totalUnits) return CLEFS.treble;
+
+  // Treble is the default for a single melodic line, so bass has to earn the
+  // switch rather than win on a hair: it must save well over two ledger lines
+  // per note-length on average. Around middle C the two staves are near
+  // enough to symmetric that a bare comparison flips on a single ledger line,
+  // which is how a hummed melody sitting just under the treble staff ends up
+  // under a bass clef. A real bass line clears this easily — an E2-A2 figure
+  // saves five or six — while a voice noodling around G3 does not.
+  return trebleCost - bassCost > totalUnits * AUTO_BASS_MARGIN ? CLEFS.bass : CLEFS.treble;
+}
+
+/* Which clef to set the line on. Auto reads it from the music, but the
+   reading is a judgement call in the register between the staves, and it
+   cannot know whether it is listening to a tenor (treble clef, by
+   convention) or a cello (bass). So the choice is offered rather than
+   imposed, and it defaults to the clef a melody is usually written in. */
+const CLEF_MODES = ['treble', 'bass', 'auto'];
+const DEFAULT_CLEF_MODE = 'treble';
+
+function resolveClef(runs, mode) {
+  if (mode === 'bass') return CLEFS.bass;
+  if (mode === 'auto') return chooseClef(runs);
+  return CLEFS.treble;
+}
+
+/* ══════════════════════════════════════════════════════════
+   KEY, SPELLING AND TRANSPOSITION
+   The tracker hears frequencies, so what it hands on is a
+   pitch and nothing else: C#4, whatever the music around it
+   was doing. But C# and Db are the same pitch and different
+   notes, and which one a copyist writes is decided by the key
+   — so the key is asked for rather than guessed, and every
+   name on the page is spelled from it at the moment it is
+   drawn. The runs themselves stay in one canonical spelling,
+   which is what lets the key be changed after the fact
+   without touching a single stored note.
+
+   The instrument is the second half of the same question. A
+   trumpet player reading concert pitch plays everything a
+   tone flat, because a B♭ trumpet sounds a tone below what
+   it reads. So the part is written up a tone — notes and key
+   signature together — and what the player then plays is the
+   music that was hummed. Every transposition here is that
+   one idea: an interval applied to the pitches and to the
+   signature at once, so the part stays internally consistent
+   and sounds, on its own instrument, at concert pitch.
+══════════════════════════════════════════════════════════ */
+
+/* The line of fifths, which is what a key signature really is: seven
+   consecutive positions on it. C sits at 0, the sharp direction is positive
+   and the flat direction negative, and a letter recurs every seventh step
+   one accidental further out — which is the whole of spelling in two lines. */
+const FIFTHS_LETTERS = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+const LETTER_SEMITONES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+function spellingAtFifth(index) {
+  return {
+    step: FIFTHS_LETTERS[(((index + 1) % 7) + 7) % 7],
+    alter: Math.floor((index + 1) / 7),
+  };
+}
+
+const parseSpelling = (name) => ({
+  step: name[0],
+  alter: name.length > 1 ? (name[1] === '#' ? 1 : -1) : 0,
+});
+
+// Where a chromatic note goes when the key has no opinion about it. A note
+// outside the scale is spelled on the side of the circle its key sits on:
+// sharps in sharp keys, flats in flat keys. Neither table ever produces E♯,
+// B♯, F♭ or C♭ — those are spellings a key signature asks for, never ones a
+// passing chromatic note should be given.
+const SHARP_SPELLINGS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map(parseSpelling);
+const FLAT_SPELLINGS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'].map(parseSpelling);
+
+/* One spelling per pitch class, for a key of the given signature. The seven
+   notes of the scale are taken from the line of fifths, so they are spelled
+   the way the signature writes them however far out that goes — in G♭ major
+   the seventh degree is F, and the fourth is C♮, and pitch class 11 is C♭
+   rather than B, because that is what the six flats on the staff mean. The
+   five notes left over are filled in from the table above. */
+function keySpellings(fifths) {
+  const table = new Array(12).fill(null);
+  for (let i = fifths - 1; i <= fifths + 5; i++) {
+    const spelled = spellingAtFifth(i);
+    table[(LETTER_SEMITONES[spelled.step] + spelled.alter + 24) % 12] = spelled;
+  }
+  const chromatic = fifths < 0 ? FLAT_SPELLINGS : SHARP_SPELLINGS;
+  return table.map((entry, pitchClass) => entry || chromatic[pitchClass]);
+}
+
+/* The written octave follows the letter, not the pitch: C♭4 is the same key
+   on a piano as B3 and is written in the fourth octave regardless, because
+   it is a C. Deriving the octave from the letter and its alteration is what
+   keeps that straight — a pitch-class shortcut puts C♭4 an octave low and
+   B♯3 an octave high, and both errors are silent. */
+function spellMidi(midi, spellings) {
+  const spelled = spellings[((midi % 12) + 12) % 12];
+  return {
+    ...spelled,
+    octave: Math.round((midi - LETTER_SEMITONES[spelled.step] - spelled.alter) / 12) - 1,
+  };
+}
+
+const ACCIDENTAL_GLYPHS = { '-1': '♭', 0: '', 1: '♯' };
+const ACCIDENTAL_NAMES = { '-1': 'flat', 0: 'natural', 1: 'sharp' };
+
+const spelledToVexKey = ({ step, alter, octave }) =>
+  `${step.toLowerCase()}${alter > 0 ? '#' : alter < 0 ? 'b' : ''}/${octave}`;
+
+const spelledToLabel = ({ step, alter, octave }) =>
+  `${step}${ACCIDENTAL_GLYPHS[alter]}${octave}`;
+
+// Which letters the signature itself alters, in the order they are written.
+// Flats are the same seven letters read backwards, which is why one list does
+// for both.
+function keySignatureAlter(step, fifths) {
+  const sharpIndex = FIFTHS_LETTERS.indexOf(step);
+  if (fifths > 0) return sharpIndex < fifths ? 1 : 0;
+  if (fifths < 0) return 6 - sharpIndex < -fifths ? -1 : 0;
+  return 0;
+}
+
+// Indexed by signature, seven flats to seven sharps. These double as the
+// spellings VexFlow is asked for, which is why they are written its way.
+const MAJOR_SPECS = ['Cb', 'Gb', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#'];
+const MINOR_SPECS = ['Abm', 'Ebm', 'Bbm', 'Fm', 'Cm', 'Gm', 'Dm', 'Am', 'Em', 'Bm', 'F#m', 'C#m', 'G#m', 'D#m', 'A#m'];
+
+function keyLabel(spec) {
+  const minor = spec.endsWith('m');
+  const tonic = (minor ? spec.slice(0, -1) : spec).replace('#', '♯').replace('b', '♭');
+  return `${tonic} ${minor ? 'minor' : 'major'}`;
+}
+
+/* The keys, in the order a musician thinks of them: C, then out through the
+   sharps, then back through the flats. Relative majors and minors share a
+   signature and differ only in where home is — which changes nothing on the
+   staff, but is carried into the MusicXML so that a file opened in a notation
+   program knows it is in A minor and not C major. */
+const KEY_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4, -5, -6, -7];
+
+const KEYS = ['major', 'minor'].flatMap((mode) =>
+  KEY_ORDER.map((fifths) => {
+    const spec = (mode === 'minor' ? MINOR_SPECS : MAJOR_SPECS)[fifths + 7];
+    return { id: spec, fifths, mode, label: keyLabel(spec) };
+  }));
+
+const KEY_BY_ID = Object.fromEntries(KEYS.map((key) => [key.id, key]));
+const DEFAULT_KEY_ID = 'C';
+
+/* The instruments, each carrying the interval its part is written at:
+   `semitones` is how far the written pitch sits above the sounding one, and
+   `fifths` is that same interval measured on the line of fifths, which is
+   what moves the key signature. The two have to agree — a major second is
+   two semitones and two fifths — and the pair is what makes a transposition
+   spell correctly rather than merely sound correct: an alto saxophone in
+   concert E♭ reads C major, not B♯ major.
+
+   Octave transpositions are the same mechanism with nothing to say about the
+   signature. A guitar is written an octave above where it sounds, so a line
+   hummed at middle C is engraved an octave higher and a guitarist reading it
+   plays the note that was hummed. */
+const PARTS = [
+  { id: 'piano',       group: 'Keyboards & mallets', label: 'Piano',              semitones: 0,   fifths: 0 },
+  { id: 'organ',       group: 'Keyboards & mallets', label: 'Organ',              semitones: 0,   fifths: 0 },
+  { id: 'accordion',   group: 'Keyboards & mallets', label: 'Accordion',          semitones: 0,   fifths: 0 },
+  { id: 'harp',        group: 'Keyboards & mallets', label: 'Harp',               semitones: 0,   fifths: 0 },
+  { id: 'marimba',     group: 'Keyboards & mallets', label: 'Marimba',            semitones: 0,   fifths: 0 },
+  { id: 'vibraphone',  group: 'Keyboards & mallets', label: 'Vibraphone',         semitones: 0,   fifths: 0 },
+  { id: 'xylophone',   group: 'Keyboards & mallets', label: 'Xylophone (8va)',    semitones: -12, fifths: 0 },
+  { id: 'glockenspiel', group: 'Keyboards & mallets', label: 'Glockenspiel (15ma)', semitones: -24, fifths: 0 },
+
+  { id: 'guitar',      group: 'Guitars & bass',     label: 'Guitar (8vb)',        semitones: 12,  fifths: 0 },
+  { id: 'bass-guitar', group: 'Guitars & bass',     label: 'Bass guitar (8vb)',   semitones: 12,  fifths: 0 },
+  { id: 'mandolin',    group: 'Guitars & bass',     label: 'Mandolin',            semitones: 0,   fifths: 0 },
+
+  { id: 'violin',      group: 'Strings',            label: 'Violin',              semitones: 0,   fifths: 0 },
+  { id: 'viola',       group: 'Strings',            label: 'Viola',               semitones: 0,   fifths: 0 },
+  { id: 'cello',       group: 'Strings',            label: 'Cello',               semitones: 0,   fifths: 0 },
+  { id: 'double-bass', group: 'Strings',            label: 'Double bass (8vb)',   semitones: 12,  fifths: 0 },
+
+  { id: 'voice',       group: 'Voice',              label: 'Voice',               semitones: 0,   fifths: 0 },
+  { id: 'tenor-voice', group: 'Voice',              label: 'Tenor voice (8vb)',   semitones: 12,  fifths: 0 },
+
+  { id: 'piccolo',     group: 'Woodwinds',          label: 'Piccolo (8va)',       semitones: -12, fifths: 0 },
+  { id: 'flute',       group: 'Woodwinds',          label: 'Flute',               semitones: 0,   fifths: 0 },
+  { id: 'alto-flute',  group: 'Woodwinds',          label: 'Alto flute (G)',      semitones: 5,   fifths: -1 },
+  { id: 'recorder',    group: 'Woodwinds',          label: 'Recorder, soprano (8va)', semitones: -12, fifths: 0 },
+  { id: 'oboe',        group: 'Woodwinds',          label: 'Oboe',                semitones: 0,   fifths: 0 },
+  { id: 'english-horn', group: 'Woodwinds',         label: 'English horn (F)',    semitones: 7,   fifths: 1 },
+  { id: 'clarinet-eb', group: 'Woodwinds',          label: 'Clarinet (E♭)',       semitones: -3,  fifths: 3 },
+  { id: 'clarinet',    group: 'Woodwinds',          label: 'Clarinet (B♭)',       semitones: 2,   fifths: 2 },
+  { id: 'clarinet-a',  group: 'Woodwinds',          label: 'Clarinet (A)',        semitones: 3,   fifths: -3 },
+  { id: 'bass-clarinet', group: 'Woodwinds',        label: 'Bass clarinet (B♭)',  semitones: 14,  fifths: 2 },
+  { id: 'bassoon',     group: 'Woodwinds',          label: 'Bassoon',             semitones: 0,   fifths: 0 },
+
+  { id: 'soprano-sax', group: 'Saxophones',         label: 'Soprano sax (B♭)',    semitones: 2,   fifths: 2 },
+  { id: 'alto-sax',    group: 'Saxophones',         label: 'Alto sax (E♭)',       semitones: 9,   fifths: 3 },
+  { id: 'tenor-sax',   group: 'Saxophones',         label: 'Tenor sax (B♭)',      semitones: 14,  fifths: 2 },
+  { id: 'bari-sax',    group: 'Saxophones',         label: 'Baritone sax (E♭)',   semitones: 21,  fifths: 3 },
+
+  { id: 'trumpet',     group: 'Brass',              label: 'Trumpet (B♭)',        semitones: 2,   fifths: 2 },
+  { id: 'cornet',      group: 'Brass',              label: 'Cornet (B♭)',         semitones: 2,   fifths: 2 },
+  { id: 'flugelhorn',  group: 'Brass',              label: 'Flugelhorn (B♭)',     semitones: 2,   fifths: 2 },
+  { id: 'horn',        group: 'Brass',              label: 'French horn (F)',     semitones: 7,   fifths: 1 },
+  { id: 'alto-horn',   group: 'Brass',              label: 'Alto horn (E♭)',      semitones: 9,   fifths: 3 },
+  { id: 'trombone',    group: 'Brass',              label: 'Trombone',            semitones: 0,   fifths: 0 },
+  { id: 'baritone-tc', group: 'Brass',              label: 'Baritone horn (B♭)',  semitones: 14,  fifths: 2 },
+  { id: 'euphonium',   group: 'Brass',              label: 'Euphonium',           semitones: 0,   fifths: 0 },
+  { id: 'tuba',        group: 'Brass',              label: 'Tuba',                semitones: 0,   fifths: 0 },
+];
+
+const PART_BY_ID = Object.fromEntries(PARTS.map((part) => [part.id, part]));
+const DEFAULT_PART_ID = 'piano';
+
+/* What MusicXML wants is the inverse of what is written here: the interval
+   from the written pitch to the sounding one, split into a diatonic part
+   (letters), a chromatic part (semitones) and whole octaves. Splitting it
+   that way is what tells an importer that a tenor saxophone reads a major
+   second up and an octave besides, rather than merely fourteen semitones —
+   the difference between a part that re-transposes correctly and one that
+   comes back spelled with double sharps. */
+function xmlTransposeFor(part) {
+  if (!part.semitones && !part.fifths) return null;
+  const diatonicWithin = (((4 * part.fifths) % 7) + 7) % 7;
+  const chromaticWithin = (((7 * part.fifths) % 12) + 12) % 12;
+  const octaves = Math.round((part.semitones - chromaticWithin) / 12);
+
+  const diatonic = -(diatonicWithin + 7 * octaves);
+  const octaveChange = Math.trunc(diatonic / 7);
+  return {
+    diatonic: diatonic - 7 * octaveChange,
+    chromatic: -part.semitones - 12 * octaveChange,
+    octaveChange,
+  };
+}
+
+/* Everything the engraver, the exporter and the console need to know about
+   how a set of concert pitches is written down. Built once from the two
+   choices the reader makes and then passed around whole, so the staff, the
+   file and the label under the picker cannot disagree about what key the
+   part is in. */
+function createNotation(keyId, partId) {
+  const key = KEY_BY_ID[keyId] || KEY_BY_ID[DEFAULT_KEY_ID];
+  const part = PART_BY_ID[partId] || PART_BY_ID[DEFAULT_PART_ID];
+
+  // A signature runs from seven flats to seven sharps and no further, so a
+  // transposition that lands outside that is respelled the other way round
+  // the circle rather than refused: an alto saxophone reading concert C♯
+  // major is written in B♭, not in the ten sharps of A♯.
+  let fifths = key.fifths + part.fifths;
+  while (fifths > 7) fifths -= 12;
+  while (fifths < -7) fifths += 12;
+
+  const spec = (key.mode === 'minor' ? MINOR_SPECS : MAJOR_SPECS)[fifths + 7];
+  const spellings = keySpellings(fifths);
+
+  return {
+    key,
+    part,
+    fifths,
+    mode: key.mode,
+    spec,                              // the signature, as VexFlow spells it
+    label: keyLabel(spec),             // the key as written, which is not always the key played
+    transposes: part.semitones !== 0,
+    spellings,
+    // Concert pitch in, written pitch out — still in the canonical spelling,
+    // because naming it is the next step and not this one.
+    written: (name) => (name === REST ? REST : midiToNoteName(noteToMidi(name) + part.semitones)),
+    spell: (name) => spellMidi(noteToMidi(name), spellings),
+    signatureAlter: (step) => keySignatureAlter(step, fifths),
+    xmlTranspose: xmlTransposeFor(part),
+  };
+}
+
+const DEFAULT_NOTATION = createNotation(DEFAULT_KEY_ID, DEFAULT_PART_ID);
+
+/* Reads back the grid a run list already sits on, rather than fitting one to
+   it. Everything downstream of `quantizeRuns` — a reloaded score, an edited
+   one — has boundaries that are already exactly on a grid, and re-running the
+   measurement-era fit on them is not harmless: the fit is a judgement made
+   from noisy onsets, and re-applying it to exact data can pull a boundary onto
+   the other grid and silently change a length that was already correct.
+
+   Exact, therefore, and not a fit: a beat divides in three when a boundary
+   inside it does not land on the straight grid. A beat nothing divides is
+   straight, which is also what `classifyBeats` says about it, and lets the
+   engraver merge it into the span beside it. */
+function classifyGriddedBeats(runs) {
+  const totalUnits = runs.reduce((sum, run) => sum + run.units, 0);
+  const beatCount = Math.max(1, Math.ceil(totalUnits / UNITS_PER_BEAT));
+  const isTriplet = new Array(beatCount).fill(false);
+
+  let at = 0;
+  for (const run of runs) {
+    at += run.units;
+    const offset = at % UNITS_PER_BEAT;
+    if (offset === 0) continue; // a downbeat divides nothing
+    const beat = Math.floor(at / UNITS_PER_BEAT);
+    if (beat < beatCount && !BINARY_OFFSETS.includes(offset)) isTriplet[beat] = true;
+  }
+
+  return isTriplet;
+}
+
+/* Whether a run list can be written down at all. Every boundary has to sit on
+   its beat's grid, and a beat may not mix the two grids: three in the time of
+   two is a bracket over the whole beat, so a beat carrying both a sixteenth
+   boundary and a triplet one is not a thing common notation can express. The
+   editor uses this to decide which lengths it is willing to offer — an option
+   that cannot be engraved is disabled rather than accepted and then lost. */
+function isEngravable(runs) {
+  if (!runs.length) return false;
+  const isTriplet = classifyGriddedBeats(runs);
+  let at = 0;
+  for (const run of runs) {
+    if (!Number.isInteger(run.units) || run.units <= 0) return false;
+    at += run.units;
+    const offset = at % UNITS_PER_BEAT;
+    if (offset === 0) continue;
+    const allowed = isTriplet[Math.floor(at / UNITS_PER_BEAT)] ? TRIPLET_OFFSETS : BINARY_OFFSETS;
+    if (!allowed.includes(offset)) return false;
+  }
+  return true;
+}
+
+/* The one place a take is fitted to the grid. Run once, on what the tracker
+   measured; everything after this point — engraving, export, playback,
+   editing, saving — works from the result and never re-fits it. */
+function quantizeRuns(runs) {
+  // Bar 1 beat 1 is the first note played. The silence around the take only
+  // records how long it took to start after pressing Record and how long it
+  // took to reach Stop; writing it as rests would push the whole line off
+  // the beat it was played on and hang empty bars off the end.
+  let first = 0;
+  while (first < runs.length && runs[first].note === REST) first++;
+  let last = runs.length;
+  while (last > first && runs[last - 1].note === REST) last--;
+  const played = runs.slice(first, last);
+  if (!played.length) return null;
+
+  // Quantizing happens here rather than during analysis because it depends on
+  // where beat one is, and beat one is the first note played — which is only
+  // known once the leading silence has been trimmed.
+  const snapped = mergeRests(snapRunsToGrid(played, classifyBeats(played))
+    .map(({ note, units }) => ({ note, units })));
+
+  // Snapping can drop a run outright — a sliver between two onsets that land
+  // in the same place — and dropping the first or last of them exposes a rest
+  // the trim above had already dealt with. So it is dealt with again, but
+  // differently: nothing here may move a boundary that has just been placed
+  // on the grid. A trailing rest can simply go, since the end of the score is
+  // not a boundary anything follows. A leading one is given to the note after
+  // it instead of removed, which starts the score on that note without
+  // shifting one thing behind it off the beat it was snapped to.
+  while (snapped.length && snapped[snapped.length - 1].note === REST) snapped.pop();
+  if (snapped.length > 1 && snapped[0].note === REST) {
+    snapped[1].units += snapped[0].units;
+    snapped.shift();
+  }
+  if (!snapped.length || snapped[0].note === REST) return null;
+
+  return snapped;
+}
+
+// Two rests in a row are one rest. They arrive that way from an edit — a
+// silenced note beside an existing gap — and left apart they are engraved as
+// two rests where a copyist would write one.
+function mergeRests(runs) {
+  const merged = [];
+  for (const run of runs) {
+    if (run.units <= 0) continue;
+    const last = merged[merged.length - 1];
+    if (last && last.note === REST && run.note === REST) last.units += run.units;
+    else merged.push({ ...run });
+  }
+  return merged;
+}
+
+/* ══════════════════════════════════════════════════════════
+   ENGRAVING MODEL
+   Turns the tracker's runs into correctly tied, barred
+   durations — not a naive grid of 16th notes, but idiomatic
+   values the way a person would notate.
+   Both the on-screen score and the MusicXML export are built
+   from this single model, so they cannot drift apart.
+══════════════════════════════════════════════════════════ */
+const UNITS_PER_MEASURE = UNITS_PER_QUARTER * 4; // 4/4
+
+// Largest-to-smallest canonical duration units. Greedy decomposition over
+// this set is exact for every multiple of 3 up to a full bar — which is
+// every length a straight beat can produce, since the finest straight value
+// is a sixteenth at 3 units. Lengths off that lattice are triplet lengths
+// and go through the tuplet path below instead.
+const DURATION_STEPS = [
+  [48, 'w'], [36, 'hd'], [24, 'h'], [18, 'qd'], [12, 'q'], [9, '8d'], [6, '8'], [3, '16'],
+];
+
+// Inside a triplet beat the written value is what a reader sees — an eighth —
+// while the sounding length is two thirds of it. Three triplet eighths (4
+// units each) fill the beat, and two of them merge into a written quarter.
+const TRIPLET_STEPS = [[8, 'q'], [4, '8']];
+
+// VexFlow token → [MusicXML note-type, dot count, written length in units]
+const XML_DURATION = {
+  w:  ['whole',   0, 48],
+  hd: ['half',    1, 36],
+  h:  ['half',    0, 24],
+  qd: ['quarter', 1, 18],
+  q:  ['quarter', 0, 12],
+  '8d': ['eighth', 1, 9],
+  '8':  ['eighth', 0, 6],
+  '16': ['16th',   0, 3],
+};
+
+function decomposeSteps(units, steps) {
+  const tokens = [];
+  let remaining = units;
+  for (const [u, dur] of steps) {
+    while (remaining >= u) { tokens.push(dur); remaining -= u; }
+  }
+  return tokens;
+}
+
+const decomposeDuration = (units) => decomposeSteps(units, DURATION_STEPS);
+
+// Groups the beats into the stretches the engraver can treat as one unit of
+// notation. Consecutive straight beats merge, so a half note across two of
+// them stays a half note rather than two tied quarters. A triplet beat never
+// merges with anything: its contents are written against a different grid,
+// and a tuplet bracket cannot span a beat it does not own. Bar lines always
+// break a span, since no note may be written through one.
+function buildSpans(totalUnits, isTriplet) {
+  const spans = [];
+  const beats = Math.ceil(totalUnits / UNITS_PER_BEAT);
+  for (let beat = 0; beat < beats; beat++) {
+    const start = beat * UNITS_PER_BEAT;
+    const triplet = !!isTriplet[beat];
+    const previous = spans[spans.length - 1];
+    if (previous && !triplet && !previous.triplet && start % UNITS_PER_MEASURE !== 0) {
+      previous.end = start + UNITS_PER_BEAT;
+    } else {
+      spans.push({ start, end: start + UNITS_PER_BEAT, triplet });
+    }
+  }
+  return spans;
+}
+
+// Splits runs across span boundaries and decomposes each piece into duration
+// tokens, threading `tieToNext` through both within-piece ties (a 15-unit run
+// becomes a tied dotted quarter + sixteenth) and cross-span ties (a run that
+// spans a barline, or that runs from a straight beat into a triplet one).
+function buildEngravingUnits(runs, isTriplet) {
+  const played = runs.reduce((sum, run) => sum + run.units, 0);
+
+  // A take almost never stops exactly on a barline, so the last measure is
+  // usually short. Fill the remainder with rests: VexFlow formats voices in
+  // strict mode and throws IncompleteVoice on any measure that doesn't total
+  // four beats, and MusicXML importers expect full measures too.
+  const shortfall = (UNITS_PER_MEASURE - (played % UNITS_PER_MEASURE)) % UNITS_PER_MEASURE;
+  // The filler carries no run index: it is not something that was played, so
+  // it is not something the editor lets you select or change.
+  const events = shortfall ? [...runs, { note: REST, units: shortfall, pad: true }] : runs;
+
+  const spans = buildSpans(played + shortfall, isTriplet);
+  const units = [];
+  let position = 0;
+  let spanIndex = 0;
+
+  for (const [runIndex, run] of events.entries()) {
+    let remaining = run.units;
+    while (remaining > 0) {
+      while (spanIndex < spans.length - 1 && position >= spans[spanIndex].end) spanIndex++;
+      const span = spans[spanIndex];
+      const take = Math.min(remaining, span.end - position);
+      const isFinalPieceOfRun = take === remaining;
+
+      // A note filling a whole triplet beat is just a quarter note. It is
+      // only a tuplet when the beat is actually divided into three.
+      const inTuplet = span.triplet && take < UNITS_PER_BEAT;
+      const tokens = inTuplet
+        ? decomposeSteps(take, TRIPLET_STEPS)
+        : decomposeDuration(take);
+      const tupletId = inTuplet ? `tuplet-${span.start}` : null;
+
+      tokens.forEach((vfDur, idx) => {
+        const isFinalToken = idx === tokens.length - 1;
+        const tieToNext = run.note !== REST && (!isFinalToken || !isFinalPieceOfRun);
+        units.push({
+          measureIndex: Math.floor(position / UNITS_PER_MEASURE),
+          note: run.note,
+          vfDur,
+          tieToNext,
+          tupletId,
+          runIndex: run.pad ? null : runIndex,
+        });
+      });
+
+      position += take;
+      remaining -= take;
+    }
+  }
+
+  return units;
+}
+
+/* Builds the engraving model from runs that are already on the grid — which
+   is everything the console holds, since `quantizeRuns` runs the moment a take
+   is analysed and nothing afterwards moves a boundary off it. */
+function modelFromRuns(runs, clefMode = DEFAULT_CLEF_MODE, notation = DEFAULT_NOTATION) {
+  if (!runs?.length) return null;
+  const isTriplet = classifyGriddedBeats(runs);
+
+  // Past this line everything is in written pitch. Transposing here rather
+  // than at each of the places that draws or exports a note is what keeps
+  // the part consistent with itself: the clef is chosen for the register the
+  // player reads, the ledger lines are the ones actually on the page, and
+  // the staff and the file are built from one set of pitches. The lengths
+  // and the indices are untouched, so a note the reader taps is still the
+  // run it came from.
+  const written = notation.transposes
+    ? runs.map((run) => ({ ...run, note: notation.written(run.note) }))
+    : runs;
+
+  const units = buildEngravingUnits(written, isTriplet);
+  if (!units.length) return null;
+  const numMeasures = units[units.length - 1].measureIndex + 1;
+  const groups = Array.from({ length: numMeasures }, () => []);
+  units.forEach((u, i) => groups[u.measureIndex].push(i));
+  return {
+    units,
+    numMeasures,
+    groups,
+    clef: resolveClef(written, clefMode),
+    notation,
+    runs,
+    hasTriplets: isTriplet.some(Boolean),
+  };
+}
+
+/* ══════════════════════════════════════════════════════════
+   REVISION
+   Post-transcription editing. A detector is not a copyist —
+   it mishears an octave, splits a held note on a bow change,
+   writes a sixteenth where a triplet was played — so the score
+   it produces is a first draft, and this is the pencil.
+
+   Every operation returns a new run list rather than mutating
+   the old one, which is what makes undo a stack of references
+   instead of a diff.
+
+   The governing rule is that a length change never moves what
+   comes after it. Rippling would be simpler to write and worse
+   to use: in strict 4/4 it drags every later note off the beat
+   it was played on, and re-fitting the whole line to the grid
+   afterwards is exactly the guesswork the edit was correcting.
+   So lengthening takes its time from what follows and
+   shortening gives the time back as a rest — the bar lines
+   hold still, and one edit stays one edit.
+══════════════════════════════════════════════════════════ */
+
+// Every value the grid can express, shortest first. Triplet values sit in
+// sequence rather than behind a modifier: a triplet eighth is a length like
+// any other here, and which of them are legal at a given point in the bar is
+// decided by the music, not by a toggle the reader has to find.
+const NOTE_VALUES = [
+  { units: 3,  label: '1/16', name: 'Sixteenth' },
+  { units: 4,  label: '1/8³', name: 'Triplet eighth' },
+  { units: 6,  label: '1/8',  name: 'Eighth' },
+  { units: 8,  label: '1/4³', name: 'Triplet quarter' },
+  { units: 9,  label: '1/8·', name: 'Dotted eighth' },
+  { units: 12, label: '1/4',  name: 'Quarter' },
+  { units: 18, label: '1/4·', name: 'Dotted quarter' },
+  { units: 24, label: '1/2',  name: 'Half' },
+  { units: 36, label: '1/2·', name: 'Dotted half' },
+  { units: 48, label: '1/1',  name: 'Whole' },
+];
+
+// The piano, rather than the detector's range. YIN is bounded by what it can
+// hear reliably; a correction is bounded by what can be written down, and the
+// octave slips worth correcting are precisely the ones at the edges.
+const EDIT_MIN_MIDI = 21;  // A0
+const EDIT_MAX_MIDI = 108; // C8
+
+function runStartUnits(runs, index) {
+  let at = 0;
+  for (let i = 0; i < index; i++) at += runs[i].units;
+  return at;
+}
+
+/* Where a run falls, in the terms the score is read in. */
+function runPosition(runs, index) {
+  const at = runStartUnits(runs, index);
+  return {
+    bar: Math.floor(at / UNITS_PER_MEASURE) + 1,
+    beat: Math.floor((at % UNITS_PER_MEASURE) / UNITS_PER_BEAT) + 1,
+  };
+}
+
+function setRunUnits(runs, index, units) {
+  const delta = units - runs[index].units;
+  // Same convention as the other two: an edit that changes nothing hands back
+  // the list it was given, so callers can tell "no change" by identity and a
+  // press on the length a note already has does not cost an undo step.
+  if (delta === 0) return runs;
+
+  const next = runs.map((run) => ({ ...run }));
+  next[index].units = units;
+
+  if (delta < 0) {
+    // The time given back is a rest in the same place, so nothing after it
+    // moves. Shortening a rest is therefore a no-op — the time it gives up
+    // becomes rest again and merges straight back in — which is why the
+    // editor refuses to offer it rather than appearing not to work.
+    next.splice(index + 1, 0, { note: REST, units: -delta });
+  } else {
+    // Taken from whatever follows, nearest first — a rest is consumed before a
+    // note is, because a rest is where the room usually is. Running out means
+    // the note was the last thing on the page, and there the score simply
+    // gets longer.
+    let owed = delta;
+    let i = index + 1;
+    while (owed > 0 && i < next.length) {
+      const take = Math.min(owed, next[i].units);
+      next[i].units -= take;
+      owed -= take;
+      if (next[i].units === 0) next.splice(i, 1);
+      else i++;
+    }
+  }
+
+  return mergeRests(next);
+}
+
+function runsEqual(a, b) {
+  return a.length === b.length
+    && a.every((run, i) => run.note === b[i].note && run.units === b[i].units);
+}
+
+/* The lengths that can be written at this point in the bar. Two are refused.
+   One that does not fit — a triplet eighth in a beat already divided into
+   sixteenths — would produce a bar that does not add up. And one that would
+   change nothing: shortening a rest is the clearest case, since the time it
+   gives up immediately becomes rest again, so the value is a button that
+   silently does not work unless it is shown as unavailable. */
+function availableNoteValues(runs, index) {
+  return NOTE_VALUES.map((value) => {
+    const current = runs[index].units === value.units;
+    if (current) return { ...value, current, allowed: true };
+    const next = setRunUnits(runs, index, value.units);
+    return { ...value, current, allowed: !runsEqual(next, runs) && isEngravable(next) };
+  });
+}
+
+function transposeRun(runs, index, semitones) {
+  const run = runs[index];
+  if (run.note === REST) return runs;
+  const midi = noteToMidi(run.note) + semitones;
+  if (midi < EDIT_MIN_MIDI || midi > EDIT_MAX_MIDI) return runs;
+  return runs.map((r, i) => (i === index ? { ...r, note: midiToNoteName(midi) } : { ...r }));
+}
+
+/* A rest becoming a note has to become some pitch, and the least surprising
+   one is the pitch already sounding around it — restoring a note the detector
+   dropped mid-phrase should not land an octave away from the phrase. */
+function setRunRest(runs, index, rest) {
+  const run = runs[index];
+  if ((run.note === REST) === rest) return runs;
+
+  let note = REST;
+  if (!rest) {
+    let pitched = null;
+    for (let d = 1; d < runs.length && !pitched; d++) {
+      const before = runs[index - d];
+      const after = runs[index + d];
+      if (before && before.note !== REST) pitched = before.note;
+      else if (after && after.note !== REST) pitched = after.note;
+    }
+    note = pitched || 'C4';
+  }
+
+  return mergeRests(runs.map((r, i) => (i === index ? { ...r, note } : { ...r })));
+}
+
+/* ══════════════════════════════════════════════════════════
+   MUSICXML EXPORT
+   Emits MusicXML 4.0 partwise. Element order inside <note>
+   follows the DTD sequence (pitch/rest → duration → tie →
+   voice → type → dot → accidental → notations); getting that
+   order wrong is the usual reason an importer rejects a file.
+══════════════════════════════════════════════════════════ */
+// Divisions per quarter. Twelve, matching the grid, so both a sixteenth (3)
+// and a triplet eighth (4) come out as whole numbers — MusicXML durations
+// must be integers, and a divisions value that cannot express a triplet is
+// the usual reason tuplets arrive in a notation program subtly out of time.
+const XML_DIVISIONS = UNITS_PER_QUARTER;
+
+function xmlEscape(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function buildMusicXML(runs, bpm, options = {}) {
+  const model = modelFromRuns(runs, options.clefMode, options.notation);
+  if (!model) return null;
+
+  const { units, numMeasures, groups, clef, notation } = model;
+  const title = options.title || 'humusic transcription';
+  const today = new Date().toISOString().slice(0, 10);
+
+  const out = [];
+  out.push('<?xml version="1.0" encoding="UTF-8"?>');
+  out.push('<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">');
+  out.push('<score-partwise version="4.0">');
+  out.push(`  <work><work-title>${xmlEscape(title)}</work-title></work>`);
+  out.push('  <identification>');
+  out.push('    <creator type="composer">humusic</creator>');
+  out.push('    <encoding>');
+  out.push('      <software>humusic transcriber</software>');
+  out.push(`      <encoding-date>${today}</encoding-date>`);
+  out.push('    </encoding>');
+  out.push('  </identification>');
+  out.push('  <part-list>');
+  out.push(`    <score-part id="P1"><part-name>${xmlEscape(notation.part.label)}</part-name></score-part>`);
+  out.push('  </part-list>');
+  out.push('  <part id="P1">');
+
+  for (let m = 0; m < numMeasures; m++) {
+    out.push(`    <measure number="${m + 1}">`);
+
+    if (m === 0) {
+      out.push('      <attributes>');
+      out.push(`        <divisions>${XML_DIVISIONS}</divisions>`);
+      out.push(`        <key><fifths>${notation.fifths}</fifths><mode>${notation.mode}</mode></key>`);
+      out.push('        <time><beats>4</beats><beat-type>4</beat-type></time>');
+      out.push(`        <clef><sign>${clef.xmlSign}</sign><line>${clef.xmlLine}</line></clef>`);
+      // Written pitch is what the file carries, so a transposing part has to
+      // say by how much, or every importer reads it as concert pitch and
+      // sounds the music a tone out.
+      if (notation.xmlTranspose) {
+        const { diatonic, chromatic, octaveChange } = notation.xmlTranspose;
+        out.push('        <transpose>');
+        out.push(`          <diatonic>${diatonic}</diatonic>`);
+        out.push(`          <chromatic>${chromatic}</chromatic>`);
+        if (octaveChange) out.push(`          <octave-change>${octaveChange}</octave-change>`);
+        out.push('        </transpose>');
+      }
+      out.push('      </attributes>');
+      out.push('      <direction placement="above">');
+      out.push('        <direction-type>');
+      out.push('          <metronome parentheses="no">');
+      out.push('            <beat-unit>quarter</beat-unit>');
+      out.push(`            <per-minute>${bpm}</per-minute>`);
+      out.push('          </metronome>');
+      out.push('        </direction-type>');
+      out.push(`        <sound tempo="${bpm}"/>`);
+      out.push('      </direction>');
+    }
+
+    // Accidentals are per-measure state in common practice notation:
+    // show one on the first pitch that departs from the key signature, and a
+    // natural when a step/octave the measure has altered comes back. What a
+    // measure starts from is the signature itself and not C major — in E♭ an
+    // A♭ is written without an accidental and an A♮ needs one. This mirrors
+    // what VexFlow draws on screen, keeping file and score identical.
+    const measureAccidentals = new Map();
+
+    for (const i of groups[m]) {
+      const u = units[i];
+      const [xmlType, dots, written] = XML_DURATION[u.vfDur];
+      const tieStop = i > 0 && units[i - 1].tieToNext;
+      const tieStart = u.tieToNext;
+
+      // A tuplet member is written as one value and sounds as another: three
+      // in the time of two, so two thirds of the written length. The grid is
+      // twelfths of a quarter precisely so that division stays exact.
+      const inTuplet = !!u.tupletId;
+      const duration = inTuplet ? (written * 2) / 3 : written;
+      const tupletStart = inTuplet && (i === 0 || units[i - 1].tupletId !== u.tupletId);
+      const tupletStop = inTuplet
+        && (i === units.length - 1 || units[i + 1].tupletId !== u.tupletId);
+
+      out.push('      <note>');
+
+      let accidental = null;
+      if (u.note === REST) {
+        out.push('        <rest/>');
+      } else {
+        const { step, alter, octave } = notation.spell(u.note);
+        const key = `${step}${octave}`;
+        const inEffect = measureAccidentals.has(key)
+          ? measureAccidentals.get(key)
+          : notation.signatureAlter(step);
+        if (alter !== inEffect) {
+          accidental = ACCIDENTAL_NAMES[alter];
+          measureAccidentals.set(key, alter);
+        }
+        out.push('        <pitch>');
+        out.push(`          <step>${step}</step>`);
+        if (alter !== 0) out.push(`          <alter>${alter}</alter>`);
+        out.push(`          <octave>${octave}</octave>`);
+        out.push('        </pitch>');
+      }
+
+      out.push(`        <duration>${duration}</duration>`);
+      if (tieStop)  out.push('        <tie type="stop"/>');
+      if (tieStart) out.push('        <tie type="start"/>');
+      out.push('        <voice>1</voice>');
+      out.push(`        <type>${xmlType}</type>`);
+      for (let d = 0; d < dots; d++) out.push('        <dot/>');
+      if (accidental) out.push(`        <accidental>${accidental}</accidental>`);
+      if (inTuplet) {
+        out.push('        <time-modification>');
+        out.push('          <actual-notes>3</actual-notes>');
+        out.push('          <normal-notes>2</normal-notes>');
+        out.push('        </time-modification>');
+      }
+
+      if (tieStop || tieStart || tupletStart || tupletStop) {
+        out.push('        <notations>');
+        if (tieStop)  out.push('          <tied type="stop"/>');
+        if (tieStart) out.push('          <tied type="start"/>');
+        if (tupletStart) out.push('          <tuplet type="start" bracket="yes"/>');
+        if (tupletStop)  out.push('          <tuplet type="stop"/>');
+        out.push('        </notations>');
+      }
+
+      out.push('      </note>');
+    }
+
+    if (m === numMeasures - 1) {
+      out.push('      <barline location="right"><bar-style>light-heavy</bar-style></barline>');
+    }
+    out.push('    </measure>');
+  }
+
+  out.push('  </part>');
+  out.push('</score-partwise>');
+  return out.join('\n') + '\n';
+}
+
+/* ══════════════════════════════════════════════════════════
+   FILE DELIVERY
+   In a browser this is a Blob download. Inside the iOS app
+   shell, WKWebView ignores the download attribute, so the file
+   is written to the app's cache and handed to the native share
+   sheet — which is also how a user gets it into Files, iCloud,
+   or a notation app on iPadOS.
+══════════════════════════════════════════════════════════ */
+function isNativeApp() {
+  return !!(window.Capacitor
+    && typeof window.Capacitor.isNativePlatform === 'function'
+    && window.Capacitor.isNativePlatform());
+}
+
+async function saveTextFile(filename, text, mimeType) {
+  if (isNativeApp()) {
+    const plugins = window.Capacitor.Plugins || {};
+    const { Filesystem, Share } = plugins;
+    if (Filesystem && Share) {
+      const written = await Filesystem.writeFile({
+        path: filename,
+        data: text,
+        directory: 'CACHE',
+        encoding: 'utf8',
+        recursive: true,
+      });
+      await Share.share({ title: filename, url: written.uri, dialogTitle: 'Export score' });
+      return 'shared';
+    }
+  }
+
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return 'downloaded';
+}
+
+function timestampSlug() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   THE LIBRARY
+   Scores kept on the device, in localStorage.
+
+   What is stored is the run list — note names and lengths in
+   grid units — and not the audio. That is the whole recording
+   in a few hundred bytes instead of a few megabytes, it
+   survives being reopened at a different tempo, and it means
+   the library holds no recording of anyone: the privacy label
+   this app ships with says no data is collected, and storing
+   the take itself would be the first thing to make that untrue.
+
+   localStorage rather than the filesystem because it is the
+   one store that behaves identically in a browser, opened from
+   disk, and inside WKWebView — and a library that exists in
+   the app but not on the web page it was written on is worse
+   than no library.
+══════════════════════════════════════════════════════════ */
+const LIBRARY_KEY = 'humusic.library.v1';
+
+const Library = {
+  all() {
+    let raw = null;
+    try { raw = window.localStorage?.getItem(LIBRARY_KEY); }
+    catch (err) { return []; } // private mode, or storage disabled
+
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      // Newest first, and defensively: a record hand-edited or written by an
+      // older build should be skipped, not allowed to break the whole list.
+      return parsed.filter(Library.isValid).sort((a, b) => b.updatedAt - a.updatedAt);
+    } catch (err) {
+      return [];
+    }
+  },
+
+  isValid(record) {
+    return !!record
+      && typeof record.id === 'string'
+      && Array.isArray(record.runs)
+      && record.runs.length > 0
+      && record.runs.every((r) => typeof r?.note === 'string' && Number.isInteger(r?.units) && r.units > 0);
+  },
+
+  get(id) {
+    return Library.all().find((record) => record.id === id) || null;
+  },
+
+  // Returns the stored record, or throws if the device has no room for it.
+  put(record) {
+    const now = Date.now();
+    const stored = {
+      id: record.id || `sc-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      title: String(record.title || 'Untitled').slice(0, 80),
+      createdAt: record.createdAt || now,
+      updatedAt: now,
+      bpm: record.bpm,
+      clefMode: record.clefMode,
+      voice: record.voice,
+      // A record written before there was a key to write down comes back in
+      // C for piano, which is exactly what it was engraved as at the time.
+      key: record.key || DEFAULT_KEY_ID,
+      part: record.part || DEFAULT_PART_ID,
+      runs: record.runs.map(({ note, units }) => ({ note, units })),
+    };
+
+    const rest = Library.all().filter((entry) => entry.id !== stored.id);
+    Library._write([stored, ...rest]);
+    return stored;
+  },
+
+  remove(id) {
+    Library._write(Library.all().filter((record) => record.id !== id));
+  },
+
+  _write(records) {
+    window.localStorage.setItem(LIBRARY_KEY, JSON.stringify(records));
+  },
+};
+
+/* Scores are named for when they were made, because that is the only thing
+   known about one at the moment it is saved. The name is editable in the
+   library, and the date is what makes an unedited one findable. */
+function defaultScoreTitle(date = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `Take ${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}`;
+}
+
+function formatSavedAt(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* A filename safe on every platform the share sheet can reach. */
+function slugifyTitle(title) {
+  const slug = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug.slice(0, 48) || 'score';
+}
+
+/* ══════════════════════════════════════════════════════════
+   ENGRAVING — VexFlow
+══════════════════════════════════════════════════════════ */
+function renderScore(runs, container, options = {}) {
+  container.innerHTML = '';
+  const model = modelFromRuns(runs, options.clefMode, options.notation);
+  if (!model) return null;
+
+  const { units, numMeasures, groups, clef, notation } = model;
+  const VF = window.Vex.Flow;
+
+  // One StaveNote per engraving unit, index-aligned with `units`
+  // so ties can be built from real note references afterward.
+  // StaveNote needs the clef too — it decides the staff line each
+  // key lands on, so omitting it draws bass pitches at treble heights.
+  const staveNotes = units.map((u) => (
+    u.note === REST
+      ? new VF.StaveNote({ keys: [clef.restKey], duration: `${u.vfDur}r`, clef: clef.vex })
+      : new VF.StaveNote({ keys: [spelledToVexKey(notation.spell(u.note))], duration: u.vfDur, clef: clef.vex })
+  ));
+
+  // A signature is drawn at the head of every system, so it costs width there
+  // — up to seven accidentals of it — and that width has to come out of the
+  // measure rather than out of the notes. Measuring it against the same stave
+  // without one is the only reliable way to know how much: the glyphs are not
+  // uniform, and a sharp is wider than a flat. Nothing is measured at all in C,
+  // where the signature is empty and the layout is what it always was.
+  const keySignatureWidth = (() => {
+    if (notation.spec === 'C' || notation.spec === 'Am') return 0;
+    const bare = new VF.Stave(0, 0, 200).addClef(clef.vex).addTimeSignature('4/4');
+    const signed = new VF.Stave(0, 0, 200)
+      .addClef(clef.vex).addKeySignature(notation.spec).addTimeSignature('4/4');
+    bare.format();
+    signed.format();
+    return Math.max(0, signed.getNoteStartX() - bare.getNoteStartX());
+  })();
+
+  const containerWidth = Math.max(container.clientWidth, 300);
+  const idealMeasureWidth = 240 + keySignatureWidth;
+  const usable = containerWidth - 24;
+  const measuresPerRow = Math.max(1, Math.min(numMeasures, Math.floor(usable / idealMeasureWidth)));
+  const measureWidth = Math.max(180 + keySignatureWidth, Math.floor(usable / measuresPerRow));
+  const staveHeight = 108;
+  const rowCount = Math.ceil(numMeasures / measuresPerRow);
+  const totalWidth = measuresPerRow * measureWidth + 24;
+  const totalHeight = rowCount * (staveHeight + 26) + 30;
+
+  const renderer = new VF.Renderer(container, VF.Renderer.Backends.SVG);
+  renderer.resize(totalWidth, totalHeight);
+  const ctx = renderer.getContext();
+
+  // Pass 1: lay out every measure, but draw nothing yet. Accidentals have to
+  // be applied across the whole line before anything is formatted — they are
+  // modifiers, so they widen the notes they sit on, and a modifier added to a
+  // note that has already been drawn never appears at all.
+  const measures = [];
+  for (let m = 0; m < numMeasures; m++) {
+    const row = Math.floor(m / measuresPerRow);
+    const col = m % measuresPerRow;
+    const x = 12 + col * measureWidth;
+    const y = 14 + row * (staveHeight + 26);
+
+    const stave = new VF.Stave(x, y, measureWidth);
+    if (col === 0) {
+      stave.addClef(clef.vex);
+      stave.addKeySignature(notation.spec);
+      if (m === 0) stave.addTimeSignature('4/4');
+    }
+    if (m === numMeasures - 1) stave.setEndBarType(VF.Barline.type.END);
+
+    const notesForMeasure = groups[m].map((i) => staveNotes[i]);
+
+    // Tuplets have to exist before the voice is formatted. Constructing one
+    // is what applies the 2/3 tick multiplier to its notes, and without that
+    // three triplet eighths count as three straight eighths — the bar then
+    // measures four and a half beats and strict formatting rejects it.
+    const tuplets = [];
+    let group = [];
+    let groupId = null;
+    const closeGroup = () => {
+      if (group.length > 1) {
+        tuplets.push(new VF.Tuplet(group, { num_notes: 3, notes_occupied: 2 }));
+      }
+      group = [];
+    };
+    groups[m].forEach((i) => {
+      const id = units[i].tupletId;
+      if (id !== groupId) { closeGroup(); groupId = id; }
+      if (id) group.push(staveNotes[i]);
+    });
+    closeGroup();
+
+    const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(true);
+    voice.addTickables(notesForMeasure);
+
+    measures.push({
+      stave, voice, notes: notesForMeasure, tuplets,
+      unitIndices: groups[m],
+      // Only the head of a system carries the signature, so only it pays for it.
+      signed: col === 0,
+    });
+  }
+
+  // applyAccidentals reads one voice as one measure, which is exactly how the
+  // MusicXML export tracks them, so the page and the file agree on every
+  // sharp and every courtesy natural.
+  VF.Accidental.applyAccidentals(measures.map((entry) => entry.voice), notation.spec);
+
+  // Pass 2: beam, format, draw — in that order, and the order is the point.
+  // A StaveNote draws its own stem only while it has no beam, and Beam.draw
+  // draws stems for the notes it owns. Beaming after the voice is drawn
+  // leaves both behind: two stems on every beamed note, plus the flags the
+  // note drew when it still thought it was unbeamed.
+  for (const { stave, voice, notes, tuplets, signed } of measures) {
+    // beam_rests:false (the default) correctly breaks beam groups at rests.
+    const beams = VF.Beam.generateBeams(notes);
+
+    stave.setContext(ctx).draw();
+    const room = measureWidth - 62 - (signed ? keySignatureWidth : 0);
+    new VF.Formatter().joinVoices([voice]).format([voice], room);
+    voice.draw(ctx, stave);
+    beams.forEach((b) => b.setContext(ctx).draw());
+    // Brackets and the 3 are drawn last: a tuplet is positioned from where
+    // its notes and their beams ended up, not from where they were asked for.
+    tuplets.forEach((t) => t.setContext(ctx).draw());
+  }
+
+  // Ties are drawn after every measure is formatted, since a tie reads the
+  // final rendered position of both notes.
+  //
+  // A tie can only be one curve while both its notes are on the same system.
+  // Across a system break the two ends are metres apart on the page, and a
+  // single curve between them is drawn as a long diagonal rule straight
+  // across the score. Notation splits it instead: a stub trailing off the
+  // end of one system and another arriving at the start of the next, which
+  // is exactly what VexFlow draws when one end is left unset.
+  const rowOfUnit = (i) => Math.floor(units[i].measureIndex / measuresPerRow);
+  const drawTie = (firstNote, lastNote) => new VF.StaveTie({
+    first_note: firstNote,
+    last_note: lastNote,
+    first_indices: [0],
+    last_indices: [0],
+  }).setContext(ctx).draw();
+
+  units.forEach((u, i) => {
+    if (!u.tieToNext || i + 1 >= staveNotes.length) return;
+    if (rowOfUnit(i) === rowOfUnit(i + 1)) {
+      drawTie(staveNotes[i], staveNotes[i + 1]);
+    } else {
+      drawTie(staveNotes[i], undefined);
+      drawTie(undefined, staveNotes[i + 1]);
+    }
+  });
+
+  if (options.onSelect || options.selected != null) {
+    layerSelection(container, { units, measures, measureWidth }, options);
+  }
+
+  return {
+    numMeasures,
+    noteCount: units.filter((u) => u.note !== REST).length,
+    clef: clef.label,
+    key: notation.label,
+    hasTriplets: model.hasTriplets,
+  };
+}
+
+/* ══════════════════════════════════════════════════════════
+   SELECTION LAYER
+   Notation is drawn to be read, not to be hit: a sixteenth
+   rest is a five-pixel squiggle, and on a phone nobody is
+   landing a fingertip on one. So the note glyphs are left
+   exactly as engraved and the target is drawn separately —
+   a column the full height of the staff, running from each
+   note to the next, the way a conductor points at a beat
+   rather than at a notehead.
+
+   The bands go in behind the engraving and the transparent
+   targets in front of it, which is why they are appended to
+   the SVG rather than drawn through VexFlow's context: the
+   marks have to sit either side of everything it drew.
+══════════════════════════════════════════════════════════ */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function layerSelection(container, { units, measures, measureWidth }, options) {
+  const svg = container.querySelector('svg');
+  if (!svg) return;
+
+  const bands = document.createElementNS(SVG_NS, 'g');
+  bands.setAttribute('class', 'score__bands');
+  const targets = document.createElementNS(SVG_NS, 'g');
+  targets.setAttribute('class', 'score__targets');
+
+  for (const { stave, notes, unitIndices } of measures) {
+    // Generous, and vertically uniform: a band that hugged each notehead
+    // would jitter up and down the staff as the melody moves, which reads as
+    // noise rather than as a row of slots.
+    const top = stave.getYForLine(0) - 26;
+    const height = (stave.getYForLine(4) + 26) - top;
+    const measureEnd = stave.getX() + measureWidth;
+
+    notes.forEach((note, i) => {
+      const runIndex = units[unitIndices[i]]?.runIndex;
+      if (runIndex == null) return; // bar filler — not something that was played
+
+      let x;
+      let right;
+      try {
+        x = note.getAbsoluteX() - 9;
+        right = i + 1 < notes.length ? notes[i + 1].getAbsoluteX() - 9 : measureEnd - 4;
+      } catch (err) {
+        return; // a note that never formatted has no position to point at
+      }
+      const width = Math.max(12, right - x);
+
+      const band = document.createElementNS(SVG_NS, 'rect');
+      band.setAttribute('class', 'score__band');
+      band.setAttribute('x', x);
+      band.setAttribute('y', top);
+      band.setAttribute('width', width);
+      band.setAttribute('height', height);
+      band.dataset.run = runIndex;
+      if (runIndex === options.selected) band.classList.add('is-selected');
+      bands.appendChild(band);
+
+      if (!options.onSelect) return;
+      const target = document.createElementNS(SVG_NS, 'rect');
+      target.setAttribute('class', 'score__target');
+      target.setAttribute('x', x);
+      target.setAttribute('y', top);
+      target.setAttribute('width', width);
+      target.setAttribute('height', height);
+      target.dataset.run = runIndex;
+      targets.appendChild(target);
+    });
+  }
+
+  svg.insertBefore(bands, svg.firstChild);
+  svg.appendChild(targets);
+
+  if (!options.onSelect) return;
+  targets.addEventListener('pointerdown', (event) => {
+    const run = event.target?.dataset?.run;
+    if (run != null) options.onSelect(Number(run));
+  });
+}
+
+/* ══════════════════════════════════════════════════════════
+   METRONOME
+   Clicks on the audio clock, not on setTimeout: a timer fired
+   from the main thread drifts under layout and GC, and a click
+   track that drifts is worse than none. A short scheduler runs
+   ahead of the playhead and books each beat at an exact time.
+
+   The click is a filtered noise burst rather than a tone, and
+   that is deliberate. Echo cancellation is off during capture,
+   so without headphones the click bleeds into the microphone.
+   Noise has no periodicity for YIN to lock onto, so a bleeding
+   click is read as unpitched and ignored; a sine would have
+   been transcribed as a note.
+══════════════════════════════════════════════════════════ */
+const METRONOME_LOOKAHEAD = 0.15; // seconds of click track booked ahead
+const METRONOME_TICK_MS = 40;     // scheduler wake-up interval
+const BEATS_PER_BAR = 4;          // the engraver is 4/4 throughout
+
+function createNoiseBuffer(ctx, seconds) {
+  const length = Math.max(1, Math.ceil(ctx.sampleRate * seconds));
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
+}
+
+class Metronome {
+  constructor(audioCtx, bpm, volume = 1) {
+    this.ctx = audioCtx;
+    this.beatDur = 60 / bpm;
+    this.volume = volume;
+    this.noise = createNoiseBuffer(audioCtx, 0.1);
+    this.timer = null;
+    this.limit = Infinity;
+  }
+
+  // `beats` bounds the click track, which is what a count-in with the
+  // metronome switched off is: the same track, stopped after four.
+  start(startTime, beats = Infinity) {
+    this.nextBeat = startTime;
+    this.beat = 0;
+    this.limit = beats;
+    this._pump();
+    this.timer = setInterval(() => this._pump(), METRONOME_TICK_MS);
+  }
+
+  _pump() {
+    while (this.beat < this.limit && this.nextBeat < this.ctx.currentTime + METRONOME_LOOKAHEAD) {
+      this._click(this.nextBeat, this.beat % BEATS_PER_BAR === 0);
+      this.nextBeat += this.beatDur;
+      this.beat++;
+    }
+    // Every click there was ever going to be is already booked on the audio
+    // clock, so the scheduler has nothing left to wake up for.
+    if (this.beat >= this.limit) this.stop();
+  }
+
+  // Downbeats sit higher and louder so the bar is audible, not just the pulse.
+  _click(when, isDownbeat) {
+    const source = this.ctx.createBufferSource();
+    source.buffer = this.noise;
+
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = isDownbeat ? 2600 : 1700;
+    band.Q.value = 1.4;
+
+    const gain = this.ctx.createGain();
+    const peak = Math.max(0.0001, (isDownbeat ? 0.5 : 0.26) * this.volume);
+    // Ramps are exponential, so they cannot start or land on exactly zero.
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.exponentialRampToValueAtTime(peak, when + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
+
+    source.connect(band);
+    band.connect(gain);
+    gain.connect(this.ctx.destination);
+    source.start(when);
+    source.stop(when + 0.08);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   INSTRUMENTS
+   Every voice is synthesised from oscillators and noise. Not a
+   stylistic choice — the bundle has to run with no network at
+   all, and a sampled instrument worth listening to is megabytes
+   of audio that would have to be embedded in the page.
+
+   So each one is built from the part of its physics that the
+   ear actually uses to name it: a struck string's partials
+   decaying at different rates, a plucked string's travelling
+   wave, a reed's formants. Cheap models, but recognisable, and
+   the whole set costs nothing to ship.
+══════════════════════════════════════════════════════════ */
+
+// Exponential ramps cannot touch zero, so silence is this instead.
+const SILENT = 0.0001;
+
+/* A cheap plucked string. Karplus-Strong: fill a delay line one period long
+   with noise, then read it round and round, averaging neighbouring samples
+   each time round. The averaging is a lowpass, so the high partials die
+   first and what is left settles into the pitch — which is what a plucked
+   string does. It is rendered into a buffer rather than built from nodes
+   because a Web Audio feedback loop is quantised to a 128-sample block,
+   putting a floor of about 344Hz on the pitch it can express. */
+function renderPluckedString(ctx, freq, seconds, damping) {
+  const rate = ctx.sampleRate;
+  const total = Math.max(2, Math.ceil(seconds * rate));
+  const period = Math.max(2, Math.round(rate / freq));
+  const buffer = ctx.createBuffer(1, total, rate);
+  const y = buffer.getChannelData(0);
+
+  // The excitation is lowpassed noise: raw noise is a click, and a pick is
+  // not a click.
+  let smoothed = 0;
+  for (let i = 0; i < period && i < total; i++) {
+    smoothed = 0.6 * smoothed + 0.4 * (Math.random() * 2 - 1);
+    y[i] = smoothed;
+  }
+  for (let i = period; i < total; i++) {
+    const previous = i - period - 1 >= 0 ? y[i - period - 1] : y[i - period];
+    y[i] = damping * 0.5 * (y[i - period] + previous);
+  }
+  return buffer;
+}
+
+function playGuitar(ctx, out, freq, when, duration) {
+  // A plucked string cannot sustain, so a long note is a decaying one and
+  // rendering more than a few seconds of it is rendering silence.
+  const ring = Math.min(3.2, duration + 1.1);
+  const source = ctx.createBufferSource();
+  source.buffer = renderPluckedString(ctx, freq, ring, 0.9965);
+
+  // The damping has to finish inside the buffer. Scheduling a release past
+  // the end of the rendered string leaves the envelope holding a note that
+  // stopped sounding — silence either way, but silence the envelope thinks
+  // is still ringing, and any later change to the tail would be a no-op.
+  const held = Math.min(duration, Math.max(0.05, ring - 0.3));
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.5, when);
+  gain.gain.setValueAtTime(0.5, when + held);
+  gain.gain.exponentialRampToValueAtTime(SILENT, when + Math.min(ring, held + 0.28));
+
+  const body = ctx.createBiquadFilter();
+  body.type = 'peaking';
+  body.frequency.value = 220;   // the box resonance that makes it a guitar
+  body.Q.value = 1.1;
+  body.gain.value = 4;
+
+  source.connect(body);
+  body.connect(gain);
+  gain.connect(out);
+  source.start(when);
+  source.stop(when + ring + 0.05);
+}
+
+/* A struck string: partials that start together and decay at their own
+   rates, the upper ones first. That difference is most of what separates a
+   struck string from a held tone, and the slight sharpness of the upper
+   partials — real strings are stiff, so they are not exact multiples — is
+   most of what stops it sounding like an organ. */
+function playPiano(ctx, out, freq, when, duration) {
+  const damped = when + duration;
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0.42, when);
+  master.gain.setValueAtTime(0.42, damped);
+  master.gain.exponentialRampToValueAtTime(SILENT, damped + 0.14);
+  master.connect(out);
+
+  // Lower notes ring far longer than high ones.
+  const base = Math.max(0.45, 3.4 - Math.log2(Math.max(freq, 27.5) / 55) * 0.62);
+  const partials = [[1, 1, 1], [2, 0.30, 0.62], [3, 0.13, 0.44], [4, 0.07, 0.32], [6, 0.03, 0.22]];
+
+  for (const [multiple, level, decayScale] of partials) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * multiple * (1 + 0.0007 * multiple * multiple);
+
+    const decay = base * decayScale;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(SILENT, when);
+    gain.gain.exponentialRampToValueAtTime(level, when + 0.004);
+    gain.gain.exponentialRampToValueAtTime(SILENT, when + 0.004 + decay);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(when);
+    osc.stop(Math.min(when + 0.004 + decay, damped + 0.2) + 0.02);
+  }
+}
+
+/* Two detuned saws through a filter that closes as the note sounds — the
+   plainest subtractive voice there is, and the reference point the other
+   three are heard against. */
+function playSynth(ctx, out, freq, when, duration) {
+  const end = when + duration;
+  const gain = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.Q.value = 4;
+  filter.frequency.setValueAtTime(Math.min(11000, freq * 8), when);
+  filter.frequency.exponentialRampToValueAtTime(Math.min(11000, Math.max(220, freq * 2.2)), end + 0.05);
+
+  gain.gain.setValueAtTime(SILENT, when);
+  gain.gain.exponentialRampToValueAtTime(0.22, when + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.16, Math.max(when + 0.02, end));
+  gain.gain.exponentialRampToValueAtTime(SILENT, end + 0.07);
+
+  for (const detune of [-7, 7]) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = freq;
+    osc.detune.value = detune;
+    osc.connect(filter);
+    osc.start(when);
+    osc.stop(end + 0.1);
+  }
+
+  filter.connect(gain);
+  gain.connect(out);
+}
+
+/* A reed: a saw for the buzz, two fixed resonances for the nasal colour a
+   conical bore gives, a breath layer, and vibrato that arrives a moment
+   after the note does — which is how a player uses it, and most of why a
+   sustained synthetic tone reads as a person rather than a machine. */
+function playSax(ctx, out, freq, when, duration) {
+  const end = when + duration;
+
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.value = freq;
+
+  const vibrato = ctx.createOscillator();
+  vibrato.frequency.value = 5.1;
+  const vibratoDepth = ctx.createGain();
+  vibratoDepth.gain.setValueAtTime(0, when);
+  vibratoDepth.gain.linearRampToValueAtTime(7, when + Math.min(0.4, duration));
+  vibrato.connect(vibratoDepth);
+  vibratoDepth.connect(osc.detune);
+
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = Math.min(9000, freq * 7);
+  const formantOne = ctx.createBiquadFilter();
+  formantOne.type = 'peaking';
+  formantOne.frequency.value = 720;
+  formantOne.Q.value = 1.2;
+  formantOne.gain.value = 7;
+  const formantTwo = ctx.createBiquadFilter();
+  formantTwo.type = 'peaking';
+  formantTwo.frequency.value = 1800;
+  formantTwo.Q.value = 1.5;
+  formantTwo.gain.value = 8;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(SILENT, when);
+  gain.gain.exponentialRampToValueAtTime(0.24, when + Math.min(0.05, duration * 0.4));
+  gain.gain.exponentialRampToValueAtTime(0.21, Math.max(when + 0.06, end));
+  gain.gain.exponentialRampToValueAtTime(SILENT, end + 0.09);
+
+  osc.connect(tone);
+  tone.connect(formantOne);
+  formantOne.connect(formantTwo);
+  formantTwo.connect(gain);
+  gain.connect(out);
+
+  // Breath: quiet, but its absence is what makes a reed sound synthetic.
+  const breath = ctx.createBufferSource();
+  breath.buffer = createNoiseBuffer(ctx, Math.max(0.25, duration + 0.2));
+  const breathBand = ctx.createBiquadFilter();
+  breathBand.type = 'bandpass';
+  breathBand.frequency.value = 2400;
+  breathBand.Q.value = 0.8;
+  const breathGain = ctx.createGain();
+  breathGain.gain.setValueAtTime(SILENT, when);
+  breathGain.gain.exponentialRampToValueAtTime(0.02, when + 0.04);
+  breathGain.gain.exponentialRampToValueAtTime(SILENT, end + 0.06);
+  breath.connect(breathBand);
+  breathBand.connect(breathGain);
+  breathGain.connect(out);
+
+  osc.start(when);
+  vibrato.start(when);
+  breath.start(when);
+  osc.stop(end + 0.12);
+  vibrato.stop(end + 0.12);
+  breath.stop(end + 0.12);
+}
+
+const INSTRUMENTS = {
+  synth:  { label: 'Synth',      voice: playSynth },
+  piano:  { label: 'Piano',      voice: playPiano },
+  guitar: { label: 'Guitar',     voice: playGuitar },
+  sax:    { label: 'Saxophone',  voice: playSax },
+};
+
+const DEFAULT_INSTRUMENT = 'piano';
+
+/* ══════════════════════════════════════════════════════════
+   PLAYBACK
+   Plays the transcription — not the recording. The point is to
+   hear what was written down, so that a wrong note or a wrong
+   rhythm is audible as a wrong note rather than having to be
+   read off the staff. It therefore plays the quantized model
+   the score is drawn from, triplets and all.
+
+   Voices are booked a fraction of a second ahead on the audio
+   clock, like the metronome and for the same reason: a long
+   take would otherwise mean thousands of nodes created at once,
+   and setTimeout is not a musical instrument.
+══════════════════════════════════════════════════════════ */
+const PLAYBACK_LOOKAHEAD = 0.2;
+const PLAYBACK_TICK_MS = 40;
+const PLAYBACK_LEAD_IN = 0.12;
+
+// Notes are released a touch early so that two of the same pitch in a row
+// are heard as two notes rather than one long one.
+function buildPlaybackSchedule(runs, bpm) {
+  const unitSeconds = 60 / bpm / UNITS_PER_QUARTER;
+  const notes = [];
+  let at = 0;
+  for (const run of runs) {
+    const span = run.units * unitSeconds;
+    if (run.note !== REST) {
+      const freq = noteToFrequency(run.note);
+      if (freq) notes.push({ freq, start: at, duration: Math.max(0.05, span - Math.min(0.045, span * 0.12)) });
+    }
+    at += span;
+  }
+  return { notes, totalSeconds: at };
+}
+
+class Player {
+  constructor({ onStateChange } = {}) {
+    this.onStateChange = onStateChange;
+    this.ctx = null;
+    this.timer = null;
+    this.playing = false;
+  }
+
+  async play(runs, bpm, instrumentKey) {
+    this.stop();
+    const instrument = INSTRUMENTS[instrumentKey] || INSTRUMENTS[DEFAULT_INSTRUMENT];
+    const { notes, totalSeconds } = buildPlaybackSchedule(runs, bpm);
+    if (!notes.length) return false;
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AudioCtx();
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.85;
+    this.master.connect(this.ctx.destination);
+
+    this.notes = notes;
+    this.index = 0;
+    this.instrument = instrument;
+    this.startedAt = this.ctx.currentTime + PLAYBACK_LEAD_IN;
+    this.endsAt = this.startedAt + totalSeconds + 0.5;
+    this.playing = true;
+    this.onStateChange?.(true);
+
+    this._pump();
+    this.timer = setInterval(() => this._pump(), PLAYBACK_TICK_MS);
+    return true;
+  }
+
+  _pump() {
+    if (!this.playing || !this.ctx) return;
+    const horizon = this.ctx.currentTime + PLAYBACK_LOOKAHEAD;
+    while (this.index < this.notes.length && this.startedAt + this.notes[this.index].start < horizon) {
+      const note = this.notes[this.index++];
+      this.instrument.voice(this.ctx, this.master, note.freq, this.startedAt + note.start, note.duration);
+    }
+    if (this.index >= this.notes.length && this.ctx.currentTime >= this.endsAt) this.stop();
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+
+    if (this.ctx) {
+      const ctx = this.ctx;
+      const master = this.master;
+      this.ctx = null;
+      this.master = null;
+      // Fade before closing. Closing a context on top of sounding voices
+      // cuts them mid-cycle, which clicks.
+      try {
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
+        master.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.06);
+      } catch (err) { /* the context may already be closing */ }
+      setTimeout(() => { ctx.close().catch(() => {}); }, 140);
+    }
+
+    if (this.playing) {
+      this.playing = false;
+      this.onStateChange?.(false);
+    }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   RECORDER
+   Captures raw PCM via a ScriptProcessorNode (chosen over an
+   AudioWorklet so the page also works opened straight from
+   disk and inside WKWebView, with no module-fetch step). The
+   processor is routed through a zero-gain node before the
+   destination — required to keep it pulling audio in all
+   browsers, without letting the mic feed back to the speaker.
+══════════════════════════════════════════════════════════ */
+const MAX_RECORDING_SECONDS = 180;
+
+/* A bar of clicks before the take. Nobody starts on the beat from a standing
+   start, and everything downstream reads the recording against a grid that
+   begins the instant capture opens — so without a count-in the first note is
+   always slightly late and the take is quantized around that. Four beats is
+   the count a musician is counted in with, and it is one bar of the 4/4 the
+   engraver writes in, so the click never has to change stride when the take
+   begins.
+
+   The clicks are not recorded: capture only opens on beat five. Nor are they
+   optional the way the metronome is — the metronome switch decides whether
+   you play along to a click, while the count-in is how you know where the
+   first beat is, which is a question everyone has to answer. */
+const COUNT_IN_BEATS = 4;
+
+// A moment between the microphone opening and the first click. Audio booked
+// at the exact current time is booked in the past by the time it is heard,
+// and the first click is the one that must not be clipped.
+const COUNT_IN_LEAD_SECONDS = 0.12;
+
+class Recorder {
+  constructor({ onLevel, onTuner, onTick, onAutoStop, onCountIn, onStart, bpm, useMetronome, volume }) {
+    this.onLevel = onLevel;
+    this.onTuner = onTuner;
+    this.onTick = onTick;
+    this.onAutoStop = onAutoStop;
+    this.onCountIn = onCountIn;
+    this.onStart = onStart;
+    this.bpm = bpm;
+    this.beatDur = 60 / bpm;
+    this.useMetronome = useMetronome;
+    this.volume = volume;
+    this.chunks = [];
+    this.recording = false;
+    this.counting = false;
+    this.sampleRate = null;
+    this.metronome = null;
+    this.countedBeat = -1;
+  }
+
+  async start() {
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    this.audioCtx = new AudioCtx();
+    // iOS hands back a suspended context until a user gesture resumes it.
+    if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+    this.sampleRate = this.audioCtx.sampleRate;
+
+    this.source = this.audioCtx.createMediaStreamSource(this.stream);
+
+    this.analyser = this.audioCtx.createAnalyser();
+    this.analyser.fftSize = 2048;
+    this.tunerBuffer = new Float32Array(this.analyser.fftSize);
+    this.source.connect(this.analyser);
+
+    this.processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+    this.mute = this.audioCtx.createGain();
+    this.mute.gain.value = 0;
+    this.source.connect(this.processor);
+    this.processor.connect(this.mute);
+    this.mute.connect(this.audioCtx.destination);
+
+    this.chunks = [];
+    this.totalSamples = 0;
+    this.recording = false;
+    this.counting = true;
+    this.countedBeat = -1;
+
+    // The graph is already running through the count-in and its samples are
+    // thrown away, which is what keeps the first sample of the take clean:
+    // a processor connected at the downbeat delivers its first buffer late.
+    this.processor.onaudioprocess = (e) => {
+      if (!this.recording) return;
+      const data = e.inputBuffer.getChannelData(0);
+      this.chunks.push(new Float32Array(data));
+      this.totalSamples += data.length;
+      if (this.totalSamples / this.sampleRate >= MAX_RECORDING_SECONDS) {
+        this.onAutoStop?.();
+      }
+    };
+
+    this.countInFrom = this.audioCtx.currentTime + COUNT_IN_LEAD_SECONDS;
+    // Beat one of the take is beat five of the count, exact on the audio
+    // clock — so the click, the count-in and the sixteenth grid the take is
+    // quantized against are one grid, with no seam where capture opens.
+    this.startedAt = this.countInFrom + COUNT_IN_BEATS * this.beatDur;
+
+    this.metronome = new Metronome(this.audioCtx, this.bpm, this.volume);
+    this.metronome.start(this.countInFrom, this.useMetronome ? Infinity : COUNT_IN_BEATS);
+
+    // Belt and braces on the handover. The frame loop is what normally drives
+    // it and a backgrounded tab stops being given frames, so a timer watches
+    // as well; `_begin` runs once, whichever of them gets there first. The
+    // timer gives up after twice the count it is waiting on, which is the
+    // one case where the audio clock is not merely late but stopped.
+    this._handoverDeadline = performance.now()
+      + (COUNT_IN_LEAD_SECONDS + COUNT_IN_BEATS * this.beatDur) * 2000 + 1000;
+    this._watchHandover();
+    this._countIn();
+  }
+
+  _watchHandover() {
+    const remaining = this.startedAt - this.audioCtx.currentTime;
+    // The click was booked on the audio clock, so the audio clock is what
+    // says when the downbeat is. A clock running behind the wall clock —
+    // throttled, or waiting on an output device that stalled — is worth
+    // waiting for, because starting early would open capture before the beat
+    // the player is listening for has sounded.
+    if (remaining > 0 && performance.now() < this._handoverDeadline) {
+      this._handover = setTimeout(() => this._watchHandover(), Math.min(remaining * 1000, 250) + 20);
+      return;
+    }
+    this._begin();
+  }
+
+  _countIn() {
+    if (!this.counting) return;
+
+    const elapsed = this.audioCtx.currentTime - this.countInFrom;
+    const beat = Math.floor(elapsed / this.beatDur);
+    if (elapsed >= 0 && beat > this.countedBeat && beat < COUNT_IN_BEATS) {
+      this.countedBeat = beat;
+      this.onCountIn?.(beat, COUNT_IN_BEATS);
+    }
+
+    if (this.audioCtx.currentTime >= this.startedAt) { this._begin(); return; }
+    this._raf = requestAnimationFrame(() => this._countIn());
+  }
+
+  _begin() {
+    if (!this.counting) return;
+    this.counting = false;
+    clearTimeout(this._handover);
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this.recording = true;
+    // The take is measured from the scheduled downbeat, not from the moment
+    // the flag flipped: that is a frame or two late and the beat was not.
+    // Unless the downbeat has not actually happened — a stalled audio clock
+    // given up on above — in which case measuring from it would run the
+    // timer backwards, and now is the honest origin.
+    this.startedAt = Math.min(this.startedAt, this.audioCtx.currentTime);
+    this.onStart?.();
+    this._tick();
+  }
+
+  // Abandoning a count-in before it has become a recording. There is nothing
+  // captured to hand back, which is the difference between this and `stop`.
+  cancel() {
+    if (!this.counting) return;
+    this.counting = false;
+    clearTimeout(this._handover);
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._teardown();
+  }
+
+  _tick() {
+    if (!this.recording) return;
+
+    this.analyser.getFloatTimeDomainData(this.tunerBuffer);
+    const level = rms(this.tunerBuffer);
+    this.onLevel?.(Math.min(1, level * 6));
+
+    if (level > SILENCE_RMS) {
+      const result = yinDetectPitch(this.tunerBuffer, this.sampleRate);
+      this.onTuner?.(result ? { ...result, note: frequencyToNote(result.frequency) } : null);
+    } else {
+      this.onTuner?.(null);
+    }
+
+    this.onTick?.(this.audioCtx.currentTime - this.startedAt);
+    this._raf = requestAnimationFrame(() => this._tick());
+  }
+
+  _teardown() {
+    // Silence the click before the context closes, or already-booked
+    // clicks fire into a closing context.
+    this.metronome?.stop();
+    this.metronome = null;
+
+    this.processor.onaudioprocess = null;
+    this.processor.disconnect();
+    this.source.disconnect();
+    this.stream.getTracks().forEach((t) => t.stop());
+    this.audioCtx.close();
+  }
+
+  stop() {
+    if (!this.recording) return null;
+    this.recording = false;
+    clearTimeout(this._handover);
+    if (this._raf) cancelAnimationFrame(this._raf);
+
+    this._teardown();
+
+    const merged = new Float32Array(this.totalSamples);
+    let offset = 0;
+    for (const chunk of this.chunks) { merged.set(chunk, offset); offset += chunk.length; }
+    this.chunks = [];
+
+    return { samples: merged, sampleRate: this.sampleRate };
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   CONSOLE
+══════════════════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+  const recordBtn   = $('#recordBtn');
+  const recordLabel = $('#recordLabel');
+  const timerText   = $('#timerText');
+  const bpmInput    = $('#bpmInput');
+  const levelFill   = $('#levelFill');
+  const pitchNote   = $('#pitchNote');
+  const centsNeedle = $('#centsNeedle');
+  const centsRead   = $('#centsRead');
+  const centsTrack  = $('#centsTrack');
+  const metaState   = $('#metaState');
+  const metaRate    = $('#metaRate');
+  const scoreEmpty  = $('#scoreEmpty');
+  const scoreMeta   = $('#scoreMeta');
+  const scoreContainer = $('#scoreContainer');
+  const exportBtn   = $('#exportBtn');
+  const clearBtn    = $('#clearBtn');
+  const saveBtn     = $('#saveBtn');
+  const saveLabel   = $('#saveLabel');
+  const undoBtn     = $('#undoBtn');
+  const playBtn     = $('#playBtn');
+  const playLabel   = $('#playLabel');
+  const voiceSelect = $('#voiceSelect');
+  const clefSelect  = $('#clefSelect');
+  const scoreTempo  = $('#scoreTempo');
+  const metronomeToggle = $('#metronomeToggle');
+  const metronomeState  = $('#metronomeState');
+  const metronomeVolume = $('#metronomeVolume');
+  const keySelect   = $('#keySelect');
+  const instrumentSelect = $('#instrumentSelect');
+  const transposeHint = $('#transposeHint');
+  const countIn     = $('#countIn');
+  const countInLabel = $('#countInLabel');
+  const countDots   = Array.from(document.querySelectorAll('.countin__dot'));
+  const toast       = $('#toast');
+
+  const editorPanel = $('#editorPanel');
+  const editorWhere = $('#editorWhere');
+  const editorPitch = $('#editorPitch');
+  const editorValues = $('#editorValues');
+  const editorClose = $('#editorClose');
+  const asNote      = $('#asNote');
+  const asRest      = $('#asRest');
+
+  const library      = $('#library');
+  const libraryBtn   = $('#libraryBtn');
+  const libraryClose = $('#libraryClose');
+  const libraryScrim = $('#libraryScrim');
+  const libraryList  = $('#libraryList');
+  const libraryEmpty = $('#libraryEmpty');
+  const librarySub   = $('#librarySub');
+  const libraryCount = $('#libraryCount');
+
+  // Links back to the marketing site are meaningless inside the app
+  // shell, where this page is the whole bundle.
+  if (isNativeApp()) {
+    document.documentElement.classList.add('is-native');
+    document.querySelectorAll('[data-web-only]').forEach((el) => { el.hidden = true; });
+  }
+
+  let toastTimer = null;
+  const showToast = (msg, kind = 'info') => {
+    toast.textContent = msg;
+    toast.dataset.kind = kind;
+    toast.classList.add('is-open');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('is-open'), 4200);
+  };
+
+  const formatTime = (s) => {
+    const m = Math.floor(s / 60).toString().padStart(2, '0');
+    const sec = Math.floor(s % 60).toString().padStart(2, '0');
+    return `${m}:${sec}`;
+  };
+
+  const clampBpm = (v) => {
+    const n = Math.round(Number(v) || 100);
+    return Math.min(240, Math.max(40, n));
+  };
+
+  /* ══════════════════════════════════════════════════════
+     HOW THE PART IS WRITTEN
+     The key and the instrument are asked for on the capture
+     panel and not on the score, because both are known
+     before a note is played and neither is a revision: they
+     change how the same run list is spelled, engraved and
+     exported, and never what it holds. Which is also why
+     changing either one only redraws.
+  ══════════════════════════════════════════════════════ */
+  const optionFor = (value, label) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+  };
+
+  const fillPicker = (select, items, current) => {
+    let group = null;
+    for (const item of items) {
+      if (!group || group.label !== item.group) {
+        group = document.createElement('optgroup');
+        group.label = item.group;
+        select.append(group);
+      }
+      group.append(optionFor(item.id, item.label));
+    }
+    select.value = current;
+  };
+
+  fillPicker(
+    keySelect,
+    KEYS.map((key) => ({ ...key, group: key.mode === 'minor' ? 'Minor' : 'Major' })),
+    DEFAULT_KEY_ID,
+  );
+  fillPicker(instrumentSelect, PARTS, DEFAULT_PART_ID);
+
+  let scoreNotation = createNotation(DEFAULT_KEY_ID, DEFAULT_PART_ID);
+
+  // What the second line under the instrument says. A part at concert pitch
+  // has nothing to explain; one that transposes has to say what the reader
+  // will actually see, since it is no longer the key they just picked.
+  function describeTransposition() {
+    const { part } = scoreNotation;
+    if (!part.semitones) return '';
+    if (part.fifths) return `Part reads in ${scoreNotation.label}`;
+    const octaves = Math.abs(part.semitones) / 12;
+    return `Part written ${octaves === 1 ? 'an octave' : `${octaves} octaves`} `
+      + `${part.semitones > 0 ? 'higher' : 'lower'}`;
+  }
+
+  function syncNotation() {
+    scoreNotation = createNotation(keySelect.value, instrumentSelect.value);
+    const hint = describeTransposition();
+    transposeHint.textContent = hint;
+    transposeHint.hidden = !hint;
+  }
+
+  const renotate = () => {
+    syncNotation();
+    if (hasScore()) refresh();
+  };
+  keySelect.addEventListener('change', renotate);
+  instrumentSelect.addEventListener('change', renotate);
+  syncNotation();
+
+  /* ══════════════════════════════════════════════════════
+     THE COUNT-IN
+  ══════════════════════════════════════════════════════ */
+  function clearCountIn() {
+    countIn.classList.remove('is-counting');
+    countInLabel.textContent = 'Count-in';
+    countDots.forEach((dot) => dot.classList.remove('is-lit'));
+  }
+
+  function markCountIn(beat, total) {
+    countIn.classList.add('is-counting');
+    countInLabel.textContent = `Count-in ${beat + 1}/${total}`;
+    // Every dot up to this beat, rather than only this one: a frame dropped
+    // under load must not leave a hole in a count that has already happened.
+    countDots.forEach((dot, i) => dot.classList.toggle('is-lit', i <= beat));
+    timerText.textContent = String(total - beat);
+  }
+
+  /* ══════════════════════════════════════════════════════
+     SCORE STATE
+     One object is the whole score: the runs, the tempo it is
+     read at, and which library record it belongs to. Every
+     view of it — the staff, the meta line, playback, the
+     export, the save button — is redrawn from here by
+     `refresh`, so there is nowhere for two of them to
+     disagree about what is on the page.
+  ══════════════════════════════════════════════════════ */
+  let score = null;      // { runs, bpm, seconds, id, title, saved }
+  let selected = null;   // index into score.runs, or null
+  let history = [];      // run lists, newest last — the undo stack
+
+  const MAX_HISTORY = 40;
+
+  function hasScore() { return !!score?.runs?.length; }
+
+  /* ── Capture ── */
+  let recorder = null;
+
+  function setIdle() {
+    recordBtn.classList.remove('is-recording', 'is-counting');
+    recordBtn.setAttribute('aria-label', 'Start recording');
+    recordLabel.textContent = 'Record';
+    metaState.textContent = 'IDLE';
+    levelFill.style.clipPath = 'inset(0 100% 0 0)';
+    bpmInput.disabled = false;
+    metronomeToggle.disabled = false;
+    metronomeVolume.disabled = false;
+    keySelect.disabled = false;
+    instrumentSelect.disabled = false;
+    centsTrack.classList.remove('is-live');
+    clearCountIn();
+    updateTuner(null);
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    recordBtn.disabled = true;
+    recordLabel.textContent = 'Unavailable';
+    showToast('Microphone capture is not supported in this browser.', 'error');
+  } else {
+    setIdle();
+
+    recordBtn.addEventListener('click', async () => {
+      // Pressing it during the count-in calls the whole thing off. Nothing
+      // has been captured yet, so there is nothing to transcribe and nothing
+      // to throw away but the click track.
+      if (recorder?.counting) {
+        recorder.cancel();
+        recorder = null;
+        timerText.textContent = '00:00';
+        setIdle();
+        return;
+      }
+
+      if (recorder?.recording) {
+        const captured = recorder.stop();
+        setIdle();
+        metaState.textContent = 'ANALYSING';
+        recordLabel.textContent = 'Working';
+        // Yield a frame so the state paints before the synchronous
+        // analysis + engraving work blocks the main thread.
+        await new Promise(requestAnimationFrame);
+        runTranscription(captured);
+        recordLabel.textContent = 'Record';
+        return;
+      }
+
+      bpmInput.value = clampBpm(bpmInput.value);
+      // The mic is about to open; anything still sounding would be recorded.
+      player.stop();
+
+      try {
+        recorder = new Recorder({
+          onLevel: (lvl) => { levelFill.style.clipPath = `inset(0 ${(1 - lvl) * 100}% 0 0)`; },
+          onTuner: updateTuner,
+          onTick: (t) => { timerText.textContent = formatTime(t); },
+          onAutoStop: () => recordBtn.click(),
+          onCountIn: markCountIn,
+          // The take proper begins on the fifth click, and the console only
+          // says RECORDING once it has: the state on the masthead is the
+          // answer to whether what you play now is being kept.
+          onStart: () => {
+            recordBtn.classList.remove('is-counting');
+            recordBtn.classList.add('is-recording');
+            recordBtn.setAttribute('aria-label', 'Stop recording');
+            recordLabel.textContent = 'Stop';
+            metaState.textContent = 'RECORDING';
+            centsTrack.classList.add('is-live');
+            clearCountIn();
+            timerText.textContent = '00:00';
+          },
+          bpm: clampBpm(bpmInput.value),
+          useMetronome: metronomeToggle.checked,
+          volume: Number(metronomeVolume.value) / 100,
+        });
+        await recorder.start();
+        recordBtn.classList.add('is-counting');
+        recordBtn.setAttribute('aria-label', 'Cancel the count-in');
+        recordLabel.textContent = 'Count-in';
+        metaState.textContent = 'COUNT-IN';
+        metaRate.textContent = `${(recorder.sampleRate / 1000).toFixed(1)}kHz`;
+        // The tempo is the count's stride and the key is what the take will
+        // be spelled in, so neither can move once the counting has started.
+        bpmInput.disabled = true;
+        metronomeToggle.disabled = true;
+        metronomeVolume.disabled = true;
+        keySelect.disabled = true;
+        instrumentSelect.disabled = true;
+      } catch (err) {
+        console.error(err);
+        recorder = null;
+        setIdle();
+        showToast('Microphone access was blocked. Allow it and try again.', 'error');
+      }
+    });
+  }
+
+  function updateTuner(result) {
+    if (!result) {
+      pitchNote.textContent = '—';
+      centsRead.textContent = '';
+      centsNeedle.style.left = '50%';
+      centsTrack.classList.remove('is-true');
+      return;
+    }
+    const target = noteToFrequency(result.note);
+    const cents = 1200 * Math.log2(result.frequency / target);
+    const clamped = Math.max(-50, Math.min(50, cents));
+    pitchNote.textContent = result.note;
+    centsRead.textContent = `${cents >= 0 ? '+' : '−'}${Math.abs(cents).toFixed(0)}¢`;
+    centsNeedle.style.left = `${50 + clamped}%`;
+    centsTrack.classList.toggle('is-true', Math.abs(cents) < 8);
+  }
+
+  function runTranscription(captured) {
+    if (!captured || captured.samples.length === 0) {
+      metaState.textContent = 'IDLE';
+      showToast('No audio captured — check your microphone and try again.', 'error');
+      return;
+    }
+
+    const bpm = clampBpm(bpmInput.value);
+
+    try {
+      const runs = quantizeRuns(analyzeRecording(captured.samples, captured.sampleRate, bpm));
+
+      if (!runs || !runs.length) {
+        showToast('Too short to quantize at this tempo. Record longer, or raise the BPM.', 'error');
+        return;
+      }
+      if (runs.every((r) => r.note === REST)) {
+        showToast('No pitched notes detected. Try playing closer to the microphone.', 'error');
+        return;
+      }
+
+      loadScore({
+        runs,
+        bpm,
+        seconds: captured.samples.length / captured.sampleRate,
+        title: defaultScoreTitle(),
+      });
+    } catch (err) {
+      console.error('Transcription failed:', err);
+      clearScore();
+      showToast('Something went wrong transcribing that take. Try again.', 'error');
+    } finally {
+      metaState.textContent = 'IDLE';
+    }
+  }
+
+  /* ══════════════════════════════════════════════════════
+     RENDERING THE SCORE
+  ══════════════════════════════════════════════════════ */
+  function loadScore(next) {
+    score = { id: null, saved: false, ...next };
+    selected = null;
+    history = [];
+    scoreTempo.value = score.bpm;
+    refresh();
+  }
+
+  function clearScore() {
+    score = null;
+    selected = null;
+    history = [];
+    player.stop();
+    scoreContainer.innerHTML = '';
+    scoreContainer.hidden = true;
+    scoreEmpty.hidden = false;
+    scoreMeta.textContent = '';
+    refreshControls();
+    refreshEditor();
+  }
+
+  function refresh() {
+    if (!hasScore()) { clearScore(); return; }
+
+    scoreEmpty.hidden = true;
+    scoreContainer.hidden = false;
+
+    let info;
+    try {
+      info = renderScore(score.runs, scoreContainer, {
+        clefMode: clefSelect.value,
+        notation: scoreNotation,
+        selected,
+        onSelect: select,
+      });
+    } catch (err) {
+      console.error('Engraving failed:', err);
+      showToast('That score could not be engraved.', 'error');
+      info = null;
+    }
+
+    if (info) {
+      const parts = [
+        `${info.numMeasures} bar${info.numMeasures === 1 ? '' : 's'}`,
+        `${info.noteCount} events`,
+      ];
+      if (info.hasTriplets) parts.push('triplets');
+      parts.push(info.key, info.clef, `${score.bpm} bpm`);
+      // Named only when it is doing something, since for most of the list it
+      // is not: what a trumpet part needs saying about it is that it is one.
+      if (scoreNotation.transposes) parts.push(scoreNotation.part.label);
+      if (score.seconds != null) parts.push(`${score.seconds.toFixed(1)}s`);
+      scoreMeta.textContent = parts.join(' · ');
+    }
+
+    refreshControls();
+    refreshEditor();
+  }
+
+  function refreshControls() {
+    const live = hasScore();
+    playBtn.disabled = !live;
+    voiceSelect.disabled = !live;
+    clefSelect.disabled = !live;
+    scoreTempo.disabled = !live;
+    exportBtn.disabled = !live;
+    clearBtn.disabled = !live;
+    saveBtn.disabled = !live || score.saved;
+    undoBtn.disabled = !history.length;
+    saveLabel.textContent = live && score.saved ? 'Saved' : 'Save';
+    if (!live) player.stop();
+  }
+
+  /* Every revision goes through here: it banks the previous run list for
+     undo, marks the score as diverged from what the library holds, and
+     redraws. Edits that change nothing are dropped before they cost an
+     undo step. */
+  function revise(nextRuns) {
+    if (!nextRuns || nextRuns === score.runs || runsEqual(nextRuns, score.runs)) return;
+    history.push(score.runs);
+    if (history.length > MAX_HISTORY) history.shift();
+    score.runs = nextRuns;
+    score.saved = false;
+    // A run list is not a recording any more once it has been edited, so the
+    // take length stops being a true description of it.
+    score.seconds = null;
+    player.stop();
+    refresh();
+  }
+
+  undoBtn.addEventListener('click', () => {
+    if (!history.length) return;
+    score.runs = history.pop();
+    score.saved = false;
+    if (selected != null && selected >= score.runs.length) selected = score.runs.length - 1;
+    player.stop();
+    refresh();
+  });
+
+  /* ══════════════════════════════════════════════════════
+     THE EDITOR
+  ══════════════════════════════════════════════════════ */
+  function select(index) {
+    if (!hasScore()) return;
+    selected = index >= 0 && index < score.runs.length ? index : null;
+    refresh();
+  }
+
+  editorClose.addEventListener('click', () => select(-1));
+
+  function refreshEditor() {
+    const run = selected != null && hasScore() ? score.runs[selected] : null;
+    editorPanel.hidden = !run;
+    if (!run) return;
+
+    const { bar, beat } = runPosition(score.runs, selected);
+    editorWhere.textContent = `Bar ${bar} · beat ${beat}`;
+
+    const isRest = run.note === REST;
+    editorPitch.textContent = isRest
+      ? '—'
+      : spelledToLabel(scoreNotation.spell(scoreNotation.written(run.note)));
+    editorPitch.parentElement.classList.toggle('is-rest', isRest);
+    asNote.setAttribute('aria-pressed', String(!isRest));
+    asRest.setAttribute('aria-pressed', String(isRest));
+
+    const midi = isRest ? null : noteToMidi(run.note);
+    editorPanel.querySelectorAll('.step').forEach((step) => {
+      const shift = Number(step.dataset.shift);
+      step.disabled = isRest
+        || midi + shift < EDIT_MIN_MIDI
+        || midi + shift > EDIT_MAX_MIDI;
+    });
+
+    // Rebuilt rather than patched: which lengths fit depends on where the
+    // event sits in its beat, so the set changes with every edit.
+    editorValues.replaceChildren(...availableNoteValues(score.runs, selected).map((value) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'value';
+      button.textContent = value.label;
+      button.title = value.name;
+      button.disabled = !value.allowed;
+      button.classList.toggle('is-current', value.current);
+      if (value.current) button.setAttribute('aria-current', 'true');
+      button.addEventListener('click', () => {
+        revise(setRunUnits(score.runs, selected, value.units));
+      });
+      return button;
+    }));
+  }
+
+  editorPanel.addEventListener('click', (event) => {
+    const step = event.target.closest('.step');
+    if (!step || selected == null) return;
+    revise(transposeRun(score.runs, selected, Number(step.dataset.shift)));
+  });
+
+  asNote.addEventListener('click', () => {
+    if (selected != null) revise(setRunRest(score.runs, selected, false));
+  });
+  asRest.addEventListener('click', () => {
+    if (selected == null) return;
+    // Silencing can merge the event into a rest beside it, and the merged
+    // rest starts where the earlier one did — so follow the selection there
+    // rather than leaving it pointing at whatever slid into the old index.
+    const at = runStartUnits(score.runs, selected);
+    const next = setRunRest(score.runs, selected, true);
+    if (next === score.runs) return;
+    let cursor = 0;
+    for (let i = 0; i < next.length; i++) {
+      if (cursor + next[i].units > at) { selected = i; break; }
+      cursor += next[i].units;
+    }
+    revise(next);
+  });
+
+  /* ══════════════════════════════════════════════════════
+     PLAYBACK
+  ══════════════════════════════════════════════════════ */
+  const player = new Player({
+    onStateChange: (playing) => {
+      playBtn.classList.toggle('is-playing', playing);
+      playLabel.textContent = playing ? 'Stop' : 'Play';
+      playBtn.setAttribute('aria-label', playing ? 'Stop playback' : 'Play the transcription');
+    },
+  });
+
+  playBtn.addEventListener('click', async () => {
+    if (player.playing) { player.stop(); return; }
+    if (!hasScore()) return;
+
+    try {
+      // Plays what is written down, not what was recorded — so anything
+      // mis-transcribed is audible as such, and a revision can be checked
+      // by ear rather than only read.
+      const started = await player.play(score.runs, score.bpm, voiceSelect.value);
+      if (!started) showToast('There is nothing but rests to play.', 'error');
+    } catch (err) {
+      console.error('Playback failed:', err);
+      player.stop();
+      showToast('Could not start playback.', 'error');
+    }
+  });
+
+  // Switching voice mid-phrase restarts on the new one rather than finishing
+  // the phrase on the old, which is what makes it useful for comparing them.
+  voiceSelect.addEventListener('change', async () => {
+    if (!player.playing || !hasScore()) return;
+    await player.play(score.runs, score.bpm, voiceSelect.value);
+  });
+
+  // Changing the clef re-engraves from the same model: only the staff the
+  // notes are set on changes, never the notes themselves.
+  clefSelect.addEventListener('change', () => { if (hasScore()) refresh(); });
+
+  /* The tempo the score is read at. It is not a re-transcription: the rhythm
+     was written down in beats, so marking it faster or slower changes what
+     the metronome mark says, how playback sounds and what the MusicXML
+     carries — and moves not one notehead. */
+  function commitTempo() {
+    if (!hasScore()) return;
+    const bpm = clampBpm(scoreTempo.value);
+    scoreTempo.value = bpm;
+    if (bpm === score.bpm) return;
+    score.bpm = bpm;
+    score.saved = false;
+    player.stop();
+    refresh();
+  }
+  scoreTempo.addEventListener('change', commitTempo);
+  scoreTempo.addEventListener('blur', commitTempo);
+
+  /* ══════════════════════════════════════════════════════
+     EXPORT
+  ══════════════════════════════════════════════════════ */
+  exportBtn.addEventListener('click', async () => {
+    if (!hasScore()) return;
+    exportBtn.disabled = true;
+    try {
+      await exportScore(score, scoreNotation);
+    } finally {
+      refreshControls();
+    }
+  });
+
+  /* The notation is passed in rather than read from the pickers, because the
+     library exports a record without opening it: a score saved for trumpet in
+     E♭ has to come out of the catalogue in E♭ for trumpet, whatever the
+     console happens to be set to at the time. */
+  async function exportScore(source, notation) {
+    try {
+      const xml = buildMusicXML(source.runs, source.bpm, {
+        title: source.title || `humusic transcription — ${source.bpm} bpm`,
+        clefMode: source.clefMode || clefSelect.value,
+        notation,
+      });
+      if (!xml) throw new Error('empty score');
+      const filename = `humusic-${slugifyTitle(source.title || '')}-${timestampSlug()}.musicxml`;
+      const how = await saveTextFile(filename, xml, 'application/vnd.recordare.musicxml+xml');
+      showToast(how === 'shared' ? 'Score ready to share.' : `Exported ${filename}`, 'ok');
+    } catch (err) {
+      console.error('Export failed:', err);
+      showToast('Could not export the score.', 'error');
+    }
+  }
+
+  clearBtn.addEventListener('click', () => {
+    // Only the console is cleared. A saved score stays in the library —
+    // clearing the desk is not the same gesture as burning the file.
+    clearScore();
+  });
+
+  /* ══════════════════════════════════════════════════════
+     THE LIBRARY
+  ══════════════════════════════════════════════════════ */
+  saveBtn.addEventListener('click', () => {
+    if (!hasScore()) return;
+    try {
+      const stored = Library.put({
+        id: score.id,
+        title: score.title || defaultScoreTitle(),
+        createdAt: score.createdAt,
+        bpm: score.bpm,
+        clefMode: clefSelect.value,
+        voice: voiceSelect.value,
+        key: keySelect.value,
+        part: instrumentSelect.value,
+        runs: score.runs,
+      });
+      score.id = stored.id;
+      score.title = stored.title;
+      score.createdAt = stored.createdAt;
+      score.saved = true;
+      refreshControls();
+      refreshLibraryCount();
+      if (!library.hidden) renderLibrary();
+      showToast(`Saved to the library as “${stored.title}”.`, 'ok');
+    } catch (err) {
+      console.error('Save failed:', err);
+      showToast('There is no room left on this device to save the score.', 'error');
+    }
+  });
+
+  function refreshLibraryCount(n = Library.all().length) {
+    libraryCount.textContent = n;
+    libraryBtn.setAttribute('aria-label', `Library — ${n} score${n === 1 ? '' : 's'}`);
+  }
+
+  function openLibrary() {
+    renderLibrary();
+    library.hidden = false;
+    libraryBtn.classList.add('is-open');
+    libraryBtn.setAttribute('aria-expanded', 'true');
+    libraryClose.focus();
+  }
+
+  function closeLibrary() {
+    library.hidden = true;
+    libraryBtn.classList.remove('is-open');
+    libraryBtn.setAttribute('aria-expanded', 'false');
+    libraryBtn.focus();
+  }
+
+  libraryBtn.addEventListener('click', () => (library.hidden ? openLibrary() : closeLibrary()));
+  libraryClose.addEventListener('click', closeLibrary);
+  libraryScrim.addEventListener('click', closeLibrary);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !library.hidden) closeLibrary();
+  });
+
+  function renderLibrary() {
+    const records = Library.all();
+    // The tally follows the list it was drawn from, so the two cannot disagree
+    // about how much is in there — the store is shared with any other tab the
+    // page is open in, and the count is on screen the whole time.
+    refreshLibraryCount(records.length);
+    libraryEmpty.hidden = records.length > 0;
+    librarySub.textContent = records.length
+      ? `${records.length} score${records.length === 1 ? '' : 's'} kept on this device`
+      : 'Kept on this device';
+
+    libraryList.replaceChildren(...records.map((record, i) => buildEntry(record, i)));
+  }
+
+  function buildEntry(record, index) {
+    const entry = document.createElement('article');
+    entry.className = 'entry';
+    entry.dataset.id = record.id;
+    if (record.id === score?.id) entry.classList.add('is-current');
+
+    const seq = document.createElement('span');
+    seq.className = 'seq entry__seq';
+    seq.setAttribute('aria-hidden', 'true');
+    seq.textContent = index + 1;
+
+    const body = document.createElement('div');
+    body.className = 'entry__body';
+
+    const title = document.createElement('input');
+    title.className = 'entry__title';
+    title.value = record.title;
+    title.maxLength = 80;
+    title.setAttribute('aria-label', 'Score title');
+    // Committed on blur rather than on every keystroke: the library is
+    // rewritten whole on each write, and rewriting it per character would
+    // also mean re-sorting the list under the cursor.
+    const commitTitle = () => {
+      const next = title.value.trim() || record.title;
+      title.value = next;
+      if (next === record.title) return;
+      record.title = next;
+      Library.put(record);
+      if (score?.id === record.id) score.title = next;
+    };
+    title.addEventListener('blur', commitTitle);
+    title.addEventListener('keydown', (event) => { if (event.key === 'Enter') title.blur(); });
+
+    const meta = document.createElement('p');
+    meta.className = 'entry__meta label';
+    meta.textContent = describeRecord(record);
+
+    body.append(title, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'entry__actions';
+    actions.append(
+      entryButton('Open', 'btn btn--sm', () => openRecord(record)),
+      entryButton('Export', 'btn btn--sm', () => exportScore(record, createNotation(record.key, record.part))),
+      entryButton('Delete', 'btn btn--sm btn--danger', (button) => confirmDelete(record, button)),
+    );
+
+    entry.append(seq, body, actions);
+    return entry;
+  }
+
+  function entryButton(text, className, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = text;
+    button.addEventListener('click', () => onClick(button));
+    return button;
+  }
+
+  function describeRecord(record) {
+    const notation = createNotation(record.key, record.part);
+    const model = modelFromRuns(record.runs, record.clefMode, notation);
+    const parts = [];
+    if (model) {
+      parts.push(`${model.numMeasures} bar${model.numMeasures === 1 ? '' : 's'}`);
+      parts.push(`${model.units.filter((u) => u.note !== REST).length} events`);
+      parts.push(notation.label);
+      parts.push(model.clef.label);
+    }
+    parts.push(`${record.bpm} bpm`, formatSavedAt(record.updatedAt));
+    return parts.join(' · ');
+  }
+
+  function openRecord(record) {
+    if (record.clefMode && CLEF_MODES.includes(record.clefMode)) clefSelect.value = record.clefMode;
+    if (record.voice && INSTRUMENTS[record.voice]) voiceSelect.value = record.voice;
+    if (record.key && KEY_BY_ID[record.key]) keySelect.value = record.key;
+    if (record.part && PART_BY_ID[record.part]) instrumentSelect.value = record.part;
+    syncNotation();
+    loadScore({
+      runs: record.runs.map(({ note, units }) => ({ note, units })),
+      bpm: clampBpm(record.bpm),
+      seconds: null,
+      id: record.id,
+      title: record.title,
+      createdAt: record.createdAt,
+      saved: true,
+    });
+    closeLibrary();
+    showToast(`Opened “${record.title}”.`);
+  }
+
+  /* Deleting is the one thing here that cannot be undone, so it asks — but in
+     place, by turning the button into its own confirmation, rather than
+     through a modal stacked on top of the modal it was pressed in. */
+  let pendingDelete = null;
+  function confirmDelete(record, button) {
+    if (pendingDelete !== record.id) {
+      resetPendingDelete();
+      pendingDelete = record.id;
+      button.textContent = 'Sure?';
+      button.dataset.confirming = 'true';
+      setTimeout(() => { if (pendingDelete === record.id) resetPendingDelete(); }, 4000);
+      return;
+    }
+
+    pendingDelete = null;
+    Library.remove(record.id);
+    // The score stays open on the desk; it simply is no longer in the
+    // library, which is what the Save button should now say.
+    if (score?.id === record.id) {
+      score.id = null;
+      score.saved = false;
+      refreshControls();
+    }
+    renderLibrary();
+    showToast(`Deleted “${record.title}”.`);
+  }
+
+  function resetPendingDelete() {
+    pendingDelete = null;
+    libraryList.querySelectorAll('[data-confirming]').forEach((button) => {
+      button.textContent = 'Delete';
+      delete button.dataset.confirming;
+    });
+  }
+
+  /* ══════════════════════════════════════════════════════
+     ODDS AND ENDS
+  ══════════════════════════════════════════════════════ */
+  bpmInput.addEventListener('blur', () => { bpmInput.value = clampBpm(bpmInput.value); });
+
+  const syncMetronomeLabel = () => {
+    metronomeState.textContent = metronomeToggle.checked ? 'On' : 'Off';
+  };
+  metronomeToggle.addEventListener('change', syncMetronomeLabel);
+  syncMetronomeLabel();
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    if (!hasScore()) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(refresh, 160);
+  });
+
+  refreshLibraryCount();
+  refreshControls();
+
+  /* The launch image stays up until the console has actually painted.
+     Left to its own timer the plugin uncovers the view on a schedule it
+     picked before the web layer existed, which on a cold start means the
+     app appears already half-built. */
+  if (isNativeApp()) {
+    const { SplashScreen } = window.Capacitor.Plugins || {};
+    if (SplashScreen) {
+      requestAnimationFrame(() => { SplashScreen.hide().catch(() => {}); });
+    }
+  }
+});

@@ -1,0 +1,989 @@
+/* ═══════════════════════════════════════════════════════════
+   humusic — app.css
+   The transcriber console. Two unequal columns divided by a
+   hairline: a narrow instrument rail and a dominant score bed.
+   ═══════════════════════════════════════════════════════════ */
+
+[hidden] { display: none !important; }
+
+.console {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ──────────────────────────────────────────────────────────
+   MASTHEAD
+   ────────────────────────────────────────────────────────── */
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+  padding: var(--s3) var(--s6);
+  padding-top: calc(var(--s3) + var(--sa-t));
+  padding-left: calc(var(--s6) + var(--sa-l));
+  padding-right: calc(var(--s6) + var(--sa-r));
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border-bottom: var(--rule);
+}
+
+.masthead__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+.masthead__brand .wordmark { font-size: var(--fs-21); }
+
+.masthead__rule {
+  width: 22px;
+  height: 1px;
+  background: var(--ink-4);
+  flex-shrink: 0;
+}
+
+.masthead__right {
+  display: flex;
+  align-items: center;
+  gap: var(--s5);
+  flex-shrink: 0;
+}
+
+.masthead__meta {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.masthead__meta .cell {
+  padding: 0 var(--s4);
+  border-left: var(--rule-hair);
+  text-align: right;
+  min-width: 74px;
+}
+.masthead__meta .cell:last-child { padding-right: 0; }
+.masthead__meta dd {
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+/* The count is set as a tally on the button rather than as a badge floating
+   off its corner — this system has no floating anything. */
+.masthead__count {
+  padding-left: var(--s2);
+  margin-left: var(--s1);
+  border-left: 1px solid currentColor;
+  font-size: var(--fs-10);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.masthead__library.is-open { background: var(--ink); color: var(--paper); }
+
+/* ──────────────────────────────────────────────────────────
+   GRID — deliberately unequal
+   ────────────────────────────────────────────────────────── */
+.console__grid {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 344px minmax(0, 1fr);
+  align-items: start;
+  padding: var(--s8) var(--s6) var(--s10);
+  padding-left: calc(var(--s6) + var(--sa-l));
+  padding-right: calc(var(--s6) + var(--sa-r));
+  gap: 0;
+}
+
+.col { min-width: 0; }
+
+.col--capture {
+  padding-right: var(--s8);
+  border-right: var(--rule-hair);
+}
+.col--score {
+  padding-left: var(--s8);
+  min-width: 0;
+}
+
+.col__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  padding-bottom: var(--s3);
+  margin-bottom: var(--s4);
+  border-bottom: var(--rule);
+}
+.col__head h2 { font-size: var(--fs-11); color: var(--ink); }
+.col__head .seq { color: var(--blue-deep); }
+.col__head-meta {
+  margin-left: auto;
+  font-size: var(--fs-10);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.col__note {
+  margin-top: var(--s4);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 34ch;
+}
+.col__note--wide { max-width: 62ch; }
+
+/* ──────────────────────────────────────────────────────────
+   CAPTURE
+   ────────────────────────────────────────────────────────── */
+.capture { padding: var(--s4); }
+
+/* Record control — a hardware transport bar, not a round button */
+.rec {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  height: 58px;
+  padding: 0 var(--s4);
+  background: var(--paper-hi);
+  border: var(--rule-2);
+  color: var(--ink);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease), border-color var(--t1) var(--ease);
+}
+.rec:hover { background: var(--paper-2); }
+
+.rec__dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--vermillion);
+  transition: border-radius var(--t2) var(--ease);
+}
+
+.rec__label {
+  justify-self: start;
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.rec__time {
+  font-size: var(--fs-17);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.rec.is-recording {
+  background: var(--vermillion);
+  border-color: var(--vermillion);
+  color: var(--paper-hi);
+}
+.rec.is-recording:hover { background: #C4340F; }
+.rec.is-recording .rec__dot {
+  border-radius: 2px;
+  background: var(--paper-hi);
+  animation: pulse 1.1s steps(1, end) infinite;
+}
+@keyframes pulse { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.25; } }
+
+/* Count-in — four beats, drawn as four dots that take their turn.
+   The row is present at rest rather than revealed when it starts, because a
+   count-in that pushed the meter down the panel as it appeared would be a
+   lurch at exactly the moment the reader is watching for a beat. */
+.countin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-top: var(--s4);
+}
+.countin__label {
+  color: var(--ink-3);
+  transition: color var(--t1) var(--ease);
+}
+.countin.is-counting .countin__label { color: var(--vermillion); }
+
+.countin__dots { display: flex; gap: var(--s2); }
+
+.countin__dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: var(--rule-hair);
+  background: var(--paper-2);
+  transition: background 140ms linear, border-color 140ms linear;
+}
+/* Struck on the beat and left standing, so the four read as a count and not
+   as four unrelated flashes. */
+.countin__dot.is-lit {
+  background: var(--vermillion);
+  border-color: var(--vermillion);
+  animation: countbeat 300ms var(--ease) 1;
+}
+@keyframes countbeat {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.55); }
+  100% { transform: scale(1); }
+}
+
+.rec.is-counting .rec__dot { animation: pulse 0.4s steps(1, end) infinite; }
+
+/* Segmented level meter */
+.meter {
+  position: relative;
+  height: 11px;
+  margin-top: var(--s4);
+  background: var(--paper-2);
+  border: var(--rule-hair);
+  overflow: hidden;
+}
+.meter__fill {
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(to right, var(--ink) 0 3px, transparent 3px 7px);
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 70ms linear;
+}
+
+/* Data rows */
+.capture .rows { margin-top: var(--s5); }
+.capture .row { align-items: center; }
+.row__v--big {
+  font-size: var(--fs-21);
+  font-weight: var(--w-medium);
+  letter-spacing: -0.02em;
+}
+
+.bpm { display: flex; align-items: baseline; gap: 5px; }
+.bpm input {
+  width: 4.2ch;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: var(--mono);
+  font-size: var(--fs-21);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  letter-spacing: -0.02em;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.bpm input::-webkit-outer-spin-button,
+.bpm input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.bpm input:focus { outline: none; color: var(--blue-deep); }
+.bpm input:disabled { opacity: 0.45; }
+.bpm__unit { font-family: var(--mono); font-size: var(--fs-10); color: var(--ink-3); }
+
+/* A select sitting in a data row reads as the row's value, not as a control
+   parked beside it — so it is right-aligned on the row's own baseline and
+   carries nothing but its chevron. */
+.rowselect {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 22ch;
+  padding: 0 12px 0 0;
+  background: none;
+  border: none;
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.04em;
+  text-align: right;
+  text-align-last: right;
+  color: var(--ink);
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 4px center, right 0 center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.rowselect:focus { outline: none; color: var(--blue-deep); }
+.rowselect:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.rowselect:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* The instrument row has a second line under it whenever the part is written
+   at some interval other than the one it sounds at. */
+.row--stacked { align-items: flex-start; }
+.row--stacked .row__v { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.row__hint {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-align: right;
+}
+
+/* Metronome switch — a panel toggle, squared off to match the rules */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle__track {
+  position: relative;
+  width: 32px;
+  height: 16px;
+  background: var(--paper-2);
+  border: var(--rule-hair);
+  transition: background 120ms linear, border-color 120ms linear;
+}
+.toggle__knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  background: var(--ink-3);
+  transition: transform 120ms ease, background 120ms linear;
+}
+.toggle input:checked + .toggle__track {
+  background: var(--blue-deep);
+  border-color: var(--blue-deep);
+}
+.toggle input:checked + .toggle__track .toggle__knob {
+  background: var(--paper);
+  transform: translateX(16px);
+}
+.toggle input:focus-visible + .toggle__track {
+  outline: 2px solid var(--blue-deep);
+  outline-offset: 2px;
+}
+.toggle__text {
+  font-size: var(--fs-10);
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+.toggle input:disabled ~ .toggle__track,
+.toggle input:disabled ~ .toggle__text { opacity: 0.45; }
+
+.metronome__v {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+.metronome__volume {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  width: 100px;
+}
+.metronome__volume-label { align-self: flex-start; }
+.metronome__volume input {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--blue-deep);
+  cursor: pointer;
+}
+.metronome__volume input:disabled { opacity: 0.45; cursor: not-allowed; }
+.toggle:has(input:disabled) { cursor: default; }
+
+/* Deviation ruler — an instrument scale, not a dial */
+.cents { margin-top: var(--s5); }
+.cents__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--s2);
+}
+.cents__head .mono { color: var(--ink); font-size: var(--fs-11); }
+
+.cents__track {
+  position: relative;
+  height: 32px;
+  background: var(--paper-2);
+  border: var(--rule-hair);
+  background-image: repeating-linear-gradient(to right, var(--hair) 0 1px, transparent 1px 10%);
+  opacity: 0.45;
+  transition: opacity var(--t2) var(--ease);
+}
+.cents__track.is-live { opacity: 1; }
+
+.cents__mid {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink);
+}
+
+.cents__needle {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--vermillion);
+  transition: left 110ms var(--ease), background var(--t1) var(--ease);
+}
+.cents__track.is-true .cents__needle { background: var(--blue); }
+
+.cents__legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--s2);
+}
+
+/* ──────────────────────────────────────────────────────────
+   SCORE
+   ────────────────────────────────────────────────────────── */
+.score {
+  padding: var(--s4);
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.score__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--s4);
+  padding: var(--s8) var(--s4) var(--s6);
+}
+.score__empty-title {
+  font-size: clamp(var(--fs-40), 6vw, var(--fs-64));
+  color: var(--ink);
+}
+.score__empty-title em { font-style: italic; color: var(--blue-deep); }
+.score__empty-body {
+  font-size: var(--fs-13);
+  line-height: 1.65;
+  color: var(--ink-2);
+  max-width: 46ch;
+  padding-top: var(--s4);
+  border-top: var(--rule-hair);
+}
+
+/* Engraving bed — warm sheet, navy ink to match the icon glyphs */
+.score__paper {
+  flex: 1;
+  background: var(--paper-hi);
+  border: var(--rule-hair);
+  padding: var(--s2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.score__paper svg { max-width: none; }
+.score__paper svg path,
+.score__paper svg rect,
+.score__paper svg text { fill: var(--ink); }
+.score__paper svg [stroke]:not([stroke='none']) { stroke: var(--ink); }
+
+/* ──────────────────────────────────────────────────────────
+   SELECTION
+   A band behind the staff, not a ring around a notehead: the
+   thing being revised is a slot in time, and its length is
+   the point of half the edits available.
+   ────────────────────────────────────────────────────────── */
+/* Scoped through .score__paper svg deliberately: the rule above paints every
+   rect in the engraving ink, to recolour VexFlow's noteheads and beams, and
+   these rects are in that SVG without being part of the engraving. They have
+   to outrank it, so they are written at the same depth. */
+.score__paper svg .score__band {
+  fill: transparent;
+  stroke: none;
+  transition: fill var(--t1) var(--ease);
+}
+.score__paper svg .score__band.is-selected {
+  fill: rgba(52, 120, 246, 0.15);
+  stroke: var(--blue);
+  stroke-width: 1;
+}
+.score__paper svg .score__target {
+  fill: transparent;
+  stroke: none;
+  cursor: pointer;
+}
+/* No hover wash on a touch screen, where there is no hover — only a sticky
+   highlight left behind the last tap. */
+@media (hover: hover) {
+  .score__paper svg .score__target:hover { fill: rgba(6, 18, 37, 0.05); }
+}
+
+/* ──────────────────────────────────────────────────────────
+   EDITOR
+   ────────────────────────────────────────────────────────── */
+.editor {
+  margin-top: var(--s4);
+  padding: var(--s4);
+}
+
+.editor__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  padding-bottom: var(--s3);
+  border-bottom: var(--rule);
+}
+.editor__head h3 { color: var(--ink); }
+.editor__where {
+  font-size: var(--fs-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--blue-deep);
+}
+.editor__close {
+  margin-left: auto;
+  color: var(--ink-3);
+  transition: color var(--t1) var(--ease);
+}
+.editor__close:hover { color: var(--ink); }
+
+.editor__rows { margin-top: var(--s3); }
+.editor .row { align-items: center; min-height: 46px; }
+
+/* Pitch stepper — a row of hard-ruled keys sharing their borders, so it
+   reads as one instrument part rather than four buttons. */
+.stepper {
+  display: flex;
+  align-items: stretch;
+  border: var(--rule-hair);
+}
+.step {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 var(--s2);
+  border-right: var(--rule-hair);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.step:last-child { border-right: none; }
+.step:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.step:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.stepper__value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  padding: 0 var(--s2);
+  border-right: var(--rule-hair);
+  background: var(--paper-hi);
+  font-size: var(--fs-15);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.stepper.is-rest .stepper__value { color: var(--ink-4); }
+
+/* Two-state control on the same rule as the stepper */
+.segmented { display: flex; border: var(--rule-hair); }
+.seg {
+  min-width: 58px;
+  height: 30px;
+  padding: 0 var(--s3);
+  border-right: var(--rule-hair);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.seg:last-child { border-right: none; }
+.seg:hover { background: var(--paper-2); }
+.seg[aria-pressed='true'] { background: var(--ink); color: var(--paper); }
+.seg[aria-pressed='true']:hover { background: var(--ink-2); }
+
+/* Length values — a keyboard of durations, shortest to longest */
+.editor__lengths { margin-top: var(--s4); }
+.editor__lengths-head { display: block; margin-bottom: var(--s2); }
+
+/* Ten columns for ten values, rather than auto-fit: a keyboard that always
+   ends flush has no half-empty last row, and the values stay in the same
+   place from one selection to the next, which is what lets you reach for
+   one without reading it. */
+.values {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0;
+  border: var(--rule-hair);
+}
+.value {
+  height: 38px;
+  border-right: var(--rule-hair);
+  border-bottom: var(--rule-hair);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  transition: background var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+.value:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.value.is-current { background: var(--blue-deep); color: #fff; }
+.value.is-current:hover { background: var(--blue-deep); color: #fff; }
+/* Not merely dim — a length that will not fit the beat is struck through,
+   because "unavailable here" is a different fact from "not selected". */
+.value:disabled {
+  color: var(--ink-4);
+  cursor: not-allowed;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.editor__note {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: var(--rule-hair);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 58ch;
+}
+
+/* ──────────────────────────────────────────────────────────
+   ACTIONS
+   Two sets — what the score sounds like, then what becomes of
+   it — divided by a rule and run together from the left rather
+   than pushed to opposite edges. The blue field claims the
+   right 38% of the page, and a set parked against that edge
+   puts the one solid blue button in the app on top of it.
+   ────────────────────────────────────────────────────────── */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3) var(--s5);
+  margin-top: var(--s4);
+}
+
+.actions__set {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3);
+}
+.actions__set + .actions__set {
+  padding-left: var(--s5);
+  border-left: var(--rule-hair);
+}
+
+/* ──────────────────────────────────────────────────────────
+   PLAYBACK
+   One button that swaps glyph rather than two that trade
+   places — a control that moves is a control you have to find
+   again mid-phrase.
+   ────────────────────────────────────────────────────────── */
+.play__icon { flex: none; }
+.play__glyph { display: inline; }
+.stop__glyph { display: none; }
+#playBtn.is-playing .play__glyph { display: none; }
+#playBtn.is-playing .stop__glyph { display: inline; }
+#playBtn.is-playing {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* The pickers read as fields on the same rule as the buttons, not as browser
+   dropdowns parked next to them. */
+.picker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 40px;
+  padding: 0 var(--s3) 0 var(--s4);
+  border: var(--rule);
+}
+.picker__label { color: var(--ink-3); }
+.picker:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.picker__select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: none;
+  padding: 0 var(--s4) 0 0;
+  font-size: var(--fs-11);
+  font-weight: var(--w-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  cursor: pointer;
+  /* The chevron is drawn here because a native select arrow cannot be
+     styled to match the hairline rules the rest of the console is built on. */
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 6px center, right 2px center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.picker__select:focus { outline: none; }
+.picker:has(.picker__select:disabled) { opacity: 0.35; }
+.picker__select:disabled { cursor: not-allowed; }
+
+/* The tempo the score is read at, which is not the tempo it was played to —
+   so it is a field on the score's own rail, beside the clef, and not the
+   capture column's BPM. */
+.picker--field { padding-right: var(--s4); gap: var(--s3); }
+.picker__input {
+  width: 3.6ch;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: var(--mono);
+  font-size: var(--fs-13);
+  font-weight: var(--w-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.picker__input::-webkit-outer-spin-button,
+.picker__input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.picker__input:focus { outline: none; color: var(--blue-deep); }
+.picker__unit {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--ink-3);
+  margin-left: -6px;
+}
+.picker:has(.picker__input:disabled) { opacity: 0.35; }
+.picker__input:disabled { cursor: not-allowed; }
+
+/* ──────────────────────────────────────────────────────────
+   LIBRARY
+   A publisher's catalogue: numbered entries on ruled lines,
+   not a grid of cards.
+   ────────────────────────────────────────────────────────── */
+.library {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(var(--s10) + var(--sa-t)) var(--s6) calc(var(--s10) + var(--sa-b));
+}
+
+.library__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 18, 37, 0.34);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: fade var(--t2) var(--ease);
+}
+@keyframes fade { from { opacity: 0; } }
+
+.library__sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  max-height: 100%;
+  padding: var(--s6);
+  overflow: hidden;
+  animation: lift var(--t2) var(--ease);
+}
+@keyframes lift { from { opacity: 0; transform: translateY(8px); } }
+
+.library__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s5);
+  padding-bottom: var(--s4);
+  border-bottom: var(--rule);
+}
+.library__title {
+  font-size: var(--fs-40);
+  color: var(--ink);
+}
+.library__title em { font-style: italic; color: var(--blue-deep); }
+.library__sub { margin-top: var(--s2); color: var(--ink-3); }
+
+.library__list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 calc(var(--s6) * -1);
+  padding: 0 var(--s6);
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4) 0;
+  border-bottom: var(--rule-hair);
+}
+.entry__seq {
+  min-width: 2.2ch;
+  color: var(--ink-4);
+  font-style: italic;
+  font-size: var(--fs-17);
+  text-align: right;
+  flex-shrink: 0;
+}
+.entry__body { flex: 1; min-width: 0; }
+
+/* The title is editable in place. It has to look like the text it replaces
+   until it is touched, or the catalogue reads as a form. */
+.entry__title {
+  display: block;
+  width: 100%;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid transparent;
+  font-family: var(--display);
+  font-size: var(--fs-17);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.entry__title:hover { border-bottom-color: var(--hair); }
+.entry__title:focus {
+  outline: none;
+  border-bottom-color: var(--blue);
+  color: var(--blue-deep);
+}
+.entry__meta {
+  margin-top: 3px;
+  color: var(--ink-3);
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry__actions {
+  display: flex;
+  gap: var(--s2);
+  flex-shrink: 0;
+}
+.entry.is-current { background: rgba(52, 120, 246, 0.06); }
+.entry.is-current .entry__seq { color: var(--blue-deep); }
+
+.library__empty {
+  padding: var(--s8) 0 var(--s4);
+  font-size: var(--fs-13);
+  line-height: 1.65;
+  color: var(--ink-2);
+  max-width: 52ch;
+}
+
+/* ──────────────────────────────────────────────────────────
+   COLOPHON
+   ────────────────────────────────────────────────────────── */
+.colophon {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border-top: var(--rule);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  padding-bottom: var(--sa-b);
+}
+.colophon .label {
+  padding: var(--s3) var(--s5);
+  border-right: var(--rule-hair);
+}
+.colophon .label:last-child { border-right: none; margin-left: auto; }
+.colophon__back { transition: color var(--t1) var(--ease); }
+.colophon__back:hover { color: var(--ink); }
+
+/* ──────────────────────────────────────────────────────────
+   TOAST
+   ────────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--s8) + var(--sa-b));
+  z-index: 60;
+  transform: translate(-50%, 10px);
+  max-width: min(88vw, 460px);
+  padding: var(--s3) var(--s5);
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t2) var(--ease), transform var(--t2) var(--ease);
+}
+.toast.is-open { opacity: 1; transform: translate(-50%, 0); }
+.toast[data-kind='error'] { background: var(--vermillion); border-color: var(--vermillion); color: #fff; }
+.toast[data-kind='ok']    { background: var(--blue-deep); border-color: var(--blue-deep); color: #fff; }
+
+/* ──────────────────────────────────────────────────────────
+   RESPONSIVE
+   ────────────────────────────────────────────────────────── */
+@media (max-width: 940px) {
+  .console__grid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--s6) var(--s5) var(--s8);
+    gap: var(--s8);
+  }
+  .col--capture { padding-right: 0; border-right: none; }
+  .col--score   { padding-left: 0; }
+  .backdrop__field { width: 100%; height: 34%; top: auto; border-left: none; border-top: var(--rule); }
+  .score { min-height: 320px; }
+  /* Once the sets stack, a rule down the left of the second one is a rule
+     pointing at nothing. */
+  .actions__set + .actions__set { padding-left: 0; border-left: none; }
+  .library { padding: var(--s5) var(--s5) calc(var(--s5) + var(--sa-b)); padding-top: calc(var(--s5) + var(--sa-t)); }
+  .library__sheet { padding: var(--s5); }
+  .library__list { margin-inline: calc(var(--s5) * -1); padding-inline: var(--s5); }
+}
+
+@media (max-width: 560px) {
+  .masthead { padding-inline: var(--s4); flex-wrap: wrap; gap: var(--s3); }
+  .masthead__brand .wordmark { font-size: var(--fs-17); }
+  .masthead__right { width: 100%; justify-content: space-between; gap: var(--s3); }
+  .masthead__meta .cell { min-width: 0; padding: 0 var(--s3); }
+  .masthead__meta .cell:first-child { padding-left: 0; border-left: none; }
+  .console__grid { padding-inline: var(--s4); }
+  .colophon .label { padding: var(--s3) var(--s4); }
+  .colophon .label:last-child { margin-left: 0; }
+  .score__empty { padding: var(--s5) 0 var(--s2); }
+
+  /* The catalogue stops being a table and becomes a stack: the row actions
+     drop under the title rather than squeezing it to nothing. */
+  .library__title { font-size: var(--fs-28); }
+  .entry { flex-wrap: wrap; }
+  .entry__seq { font-size: var(--fs-15); }
+  .entry__actions { width: 100%; padding-left: calc(2.2ch + var(--s4)); }
+  /* The date is how an unnamed take is found again, so it wraps here rather
+     than being the thing the ellipsis eats. */
+  .entry__meta { white-space: normal; }
+  .values { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}

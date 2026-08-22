@@ -1,0 +1,24 @@
+{
+  "name": "humusic",
+  "version": "1.0.0",
+  "private": true,
+  "description": "humusic — record a monophonic line, transcribe it to classical notation, export MusicXML.",
+  "author": "Dayton Barrett",
+  "license": "MIT",
+  "scripts": {
+    "build": "python3 scripts/build-www.py",
+    "ios:add": "npm run build && npx cap add ios",
+    "ios:sync": "npm run build && npx cap sync ios",
+    "ios:open": "npx cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/ios": "^8.5.0",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0"
+  }
+}
