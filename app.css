@@ -378,6 +378,28 @@
 }
 .toggle input:disabled ~ .toggle__track,
 .toggle input:disabled ~ .toggle__text { opacity: 0.45; }
+
+.metronome__v {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+.metronome__volume {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  width: 100px;
+}
+.metronome__volume-label { align-self: flex-start; }
+.metronome__volume input {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--blue-deep);
+  cursor: pointer;
+}
+.metronome__volume input:disabled { opacity: 0.45; cursor: not-allowed; }
 .toggle:has(input:disabled) { cursor: default; }
 
 /* Deviation ruler — an instrument scale, not a dial */
