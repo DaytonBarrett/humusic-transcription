@@ -768,6 +768,270 @@ function nearestOffsetError(position, offsets) {
   return best;
 }
 
+/* ══════════════════════════════════════════════════════════
+   FRAGMENT CONSOLIDATION
+   The last thing standing between a rough take and the grid.
+
+   Everything upstream measures in frames and is free to
+   describe a note two frames long. The score is not: a
+   sixteenth is the shortest thing common notation can write,
+   so anything shorter is rounded up to one and the time is
+   taken out of whatever stood beside it. A two-frame slip
+   therefore does not stay a small error — it is promoted to a
+   written sixteenth, and the note it was carved out of is
+   written short to pay for it. That promotion is where a
+   wobbly take turns into confetti.
+
+   So a run too short to be engraved has to earn the sixteenth
+   it is about to become, and what follows is the list of ways
+   it is known not to have earned it. Each one is something an
+   untrained voice does constantly and a listener never hears
+   as a note: repeating the note beside it, sliding up into
+   the note after it, breathing in the middle of a phrase, or
+   flickering once inside a note that was being held.
+
+   Two things this deliberately does not do. It does not
+   invent or move a boundary: a fragment is only ever given to
+   the run beside it, so the line keeps its exact total length
+   and every surviving boundary is still one the tracker
+   measured. And it does not touch anything that arrived on a
+   detected attack unless the pitch evidence is overwhelming —
+   an articulated short note is a short note, however awkward,
+   because somebody played it that way on purpose.
+══════════════════════════════════════════════════════════ */
+
+// The shortest duration the score can write, and therefore the length every
+// shorter run is about to be rounded up to.
+const MIN_WRITABLE_UNITS = UNITS_PER_QUARTER / 4;
+
+// Below this a run is not a note under any reading. It is a frame or two of
+// transition, and the only question left is which note it belongs to.
+const FRAGMENT_FLOOR_UNITS = 2;
+
+// How much longer the notes on either side must be before a fragment between
+// them reads as damage done to them rather than as music played between them.
+const WEDGE_RATIO = 4;
+
+/* How much longer the note a slide runs into has to be than the slide.
+
+   Without this the slide test eats scales. Every note of a rising line is
+   strictly between the note before it and the note after — that is what a
+   scale is — so C D E F G reads as four consecutive slides and comes back as
+   C E G with the passing notes swallowed. What actually distinguishes a scoop
+   is not that it sits between its neighbours but that it is a short thing
+   arriving at a long one: the voice slides for a moment and then stays. In a
+   scale the notes either side are the same length as it is, so requiring the
+   destination to be substantially longer separates the two cleanly and costs
+   nothing real.
+
+   The test is applied on both sides, and that is what carries it. A genuinely
+   fast note does not measure a full sixteenth — the pitch window is wider
+   than a frame, so a sixteenth at 90bpm comes back as two units where the
+   grid says three — and every note of a fast run is therefore a fragment by
+   length alone. Length cannot save them and neither can the destination: the
+   last note before a long one is short and arrives at something sustained,
+   which is exactly the shape of a scoop. What a fast note always has, and a
+   scoop never does, is another fast note on the other side of it. So the
+   slide is only read when the run is isolated — sustained notes on both
+   sides — and a run of them protects every note in it, including its last. */
+const SLIDE_TARGET_RATIO = 3;
+
+// The same test, relaxed, for the case where the evidence is strongest: the
+// same note on both sides. Then the fragment is not between two notes at all.
+// It is inside one, and the note it interrupted is still sounding after it.
+const INTERRUPTION_RATIO = 2;
+
+// Runs are absorbed one at a time, because absorbing one changes what the
+// next is standing beside. Every pass removes a run, so this bound is a
+// safety catch rather than a limit any real take could reach.
+const MAX_CONSOLIDATION_PASSES = 512;
+
+/* Three or more pieces of the same note in a row, with nothing between them,
+   are one note that was chopped up — not a repeated-note figure.
+
+   This is the breath case, and it needs its own test because every other
+   defence is blind to it. The pieces are all the same pitch, so nothing about
+   the pitch is wrong; each is a sixteenth or longer, so nothing is too short
+   to write; and each begins on an attack the detector genuinely found, so the
+   tracker was right to split there on the evidence it had. What is wrong is
+   only visible from further back: a singer running out of breath dips and
+   recovers several times inside one long note, and each recovery is a rise in
+   level that no threshold can tell from a re-articulation. The onset detector
+   says so itself — measured across real attacks and real dips, the two ranges
+   overlap completely, and the shape test it uses instead catches most but not
+   all of them.
+
+   What separates them is regularity. A repeated note that somebody meant is
+   rhythmically even: three eighths, or four sixteenths, all the same length.
+   Breath dips fall wherever the breath ran out, so the pieces come out
+   uneven — a sixteenth, then an eighth, then a sixteenth. So a group is
+   collapsed only when its pieces are unequal and at least one of them is no
+   longer than a sixteenth, which leaves every even repeated figure standing. */
+function collapseChoppedSustains(runs) {
+  const out = [];
+  for (let i = 0; i < runs.length; i++) {
+    let end = i;
+    if (runs[i].note !== REST) {
+      while (end + 1 < runs.length && runs[end + 1].note === runs[i].note) end++;
+    }
+
+    const pieces = end - i + 1;
+    if (pieces >= 3) {
+      const lengths = runs.slice(i, end + 1).map((run) => run.units);
+      const uneven = lengths.some((units) => units !== lengths[0]);
+      const hasShort = lengths.some((units) => units <= MIN_WRITABLE_UNITS);
+      if (uneven && hasShort) {
+        out.push({
+          note: runs[i].note,
+          units: lengths.reduce((sum, units) => sum + units, 0),
+          startedByOnset: runs[i].startedByOnset,
+        });
+        i = end;
+        continue;
+      }
+    }
+
+    out.push({ ...runs[i] });
+  }
+  return out;
+}
+
+const runMidi = (run) => (run && run.note !== REST ? noteToMidi(run.note) : null);
+
+/* Which run a given run should be folded into, or null if it stands on its
+   own. The tests are ordered by how much they know: an exact repeat of the
+   note alongside is certainty, a wedge is inference. */
+function absorptionTarget(runs, i) {
+  const run = runs[i];
+  const prev = i > 0 ? runs[i - 1] : null;
+  const next = i + 1 < runs.length ? runs[i + 1] : null;
+  if (!prev && !next) return null;
+
+  // Only the previous run can take a fragment that has no successor, and
+  // only the next one can take a fragment that opens the take.
+  const backward = prev ? i - 1 : null;
+  const forward = next ? i + 1 : null;
+
+  /* An unarticulated flicker with the same note standing on both sides of it
+     was never between two notes — it happened inside one. This is the wobble
+     that crosses a semitone and comes back, and it is the single largest
+     source of stray sixteenths in a sung take, because at three frames it is
+     already exactly a sixteenth long and every earlier defence lets it pass.
+     It is caught here by what it is surrounded by rather than by its length. */
+  if (prev && next && !run.startedByOnset
+      && run.note !== REST && prev.note === next.note && prev.note !== run.note
+      && run.units <= MIN_WRITABLE_UNITS
+      && prev.units >= run.units * INTERRUPTION_RATIO
+      && next.units >= run.units * INTERRUPTION_RATIO) {
+    return backward;
+  }
+
+  /* A scoop, once its frames are named. Sliding up to a pitch spends a moment
+     somewhere between where the voice started and where it was going, and
+     that moment is read as a note strictly between the two.
+
+     A chromatic passing note looks identical on the page, so length alone
+     cannot separate them once the slide is slow enough to fill a sixteenth —
+     and an untrained voice scoops that slowly all the time. What separates
+     them is where the attacks are. A slide is one gesture: the voice is
+     struck once, at the bottom, and arrives at the note without being struck
+     again. A passing note that somebody meant is played, and so is the note
+     after it. So a run this long is only read as a slide when the note it
+     runs into was never articulated — and it carries the attack forward with
+     it, because the attack is where the slide began. */
+  const pitch = runMidi(run);
+  const prevPitch = runMidi(prev);
+  const nextPitch = runMidi(next);
+  const between = pitch !== null && prevPitch !== null && nextPitch !== null
+    && pitch > Math.min(prevPitch, nextPitch)
+    && pitch < Math.max(prevPitch, nextPitch);
+
+  if (between && run.units <= MIN_WRITABLE_UNITS
+      && prev.units >= run.units * SLIDE_TARGET_RATIO
+      && next.units >= run.units * SLIDE_TARGET_RATIO
+      && (run.units < MIN_WRITABLE_UNITS || !next.startedByOnset)) {
+    return forward;
+  }
+
+  // Everything below this line is about runs too short to be written at all.
+  if (run.units >= MIN_WRITABLE_UNITS) return null;
+
+  /* The same note either side of a boundary is the same note. Whatever split
+     it — a consonant, a breath, a bow change read as an attack — a repeat
+     shorter than a sixteenth could not have been written as a repeat anyway,
+     so keeping the boundary buys nothing and costs a spurious note. */
+  if (prev && prev.note === run.note) return backward;
+  if (next && next.note === run.note) return forward;
+
+  /* A silence too short to write is not a rest. It is the gap inside a
+     phrase — the closure before a consonant, the moment a bow leaves the
+     string — and it belongs to the note that was sounding into it. */
+  if (run.note === REST) return backward ?? forward;
+
+  /* The same scoop at the start of a phrase, where there is no note behind
+     it to sit between — only silence, or nothing at all. What marks it is
+     that the note it runs into is far longer: the voice arrived under the
+     pitch and then stayed. */
+  if (next && (!prev || prev.note === REST) && nextPitch !== null
+      && next.units >= run.units * WEDGE_RATIO) {
+    return forward;
+  }
+
+  // One or two frames is below the length at which the tracker's own
+  // evidence means anything. It goes to whichever note is there to take it.
+  if (run.units < FRAGMENT_FLOOR_UNITS) return backward ?? forward;
+
+  /* Wedged inside notes far longer than itself, with no attack to account
+     for it. A real sixteenth between two long notes is ordinary music and is
+     kept — but it is kept because somebody articulated it, and this one
+     nobody did. */
+  if (prev && next && !run.startedByOnset
+      && prev.units >= run.units * WEDGE_RATIO
+      && next.units >= run.units * WEDGE_RATIO) {
+    return backward;
+  }
+
+  return null;
+}
+
+/* Folds `from` into `to`, which must be its immediate neighbour. Absorbing
+   forward keeps the fragment's own articulation: the merged note begins where
+   the fragment began, so if that was a detected attack it is still where the
+   note was struck. */
+function absorbRun(runs, from, to) {
+  const out = runs.map((run) => ({ ...run }));
+  const forward = to > from;
+  out[to].units += out[from].units;
+  if (forward) out[to].startedByOnset = out[from].startedByOnset;
+  out.splice(from, 1);
+  return out;
+}
+
+/* Repeats until the line stops changing. One fragment is absorbed per pass,
+   because folding a scoop away leaves the wobble after it standing next to a
+   different note than it was, and the second decision is only sound once the
+   first has been made. */
+function consolidateFragments(runs) {
+  let current = collapseChoppedSustains(runs);
+
+  for (let pass = 0; pass < MAX_CONSOLIDATION_PASSES; pass++) {
+    if (current.length < 2) break;
+
+    let absorbed = null;
+    for (let i = 0; i < current.length; i++) {
+      const target = absorptionTarget(current, i);
+      if (target !== null) { absorbed = absorbRun(current, i, target); break; }
+    }
+    if (!absorbed) break;
+
+    // Absorbing can leave two runs of the same note adjacent where a fragment
+    // used to separate them — the held note, reunited with its other half.
+    current = mergeUnarticulatedRuns(absorbed);
+  }
+
+  return current;
+}
+
 /* Returns [{ note, units }] — one entry per note, `units` in twelfths of a
    quarter. Runs rather than a flat per-frame array, because two adjacent
    notes at the same pitch are a distinction a flat array cannot carry. */
@@ -782,7 +1046,8 @@ function analyzeRecording(samples, sampleRate, bpm) {
   smoothPitch(frames);
   fillDropouts(frames, Math.max(1, Math.round(MAX_DROPOUT_SECONDS / frameDur)));
 
-  return mergeUnarticulatedRuns(trackNotes(frames, frameDur, detectOnsets(signal)));
+  const tracked = mergeUnarticulatedRuns(trackNotes(frames, frameDur, detectOnsets(signal)));
+  return consolidateFragments(tracked);
 }
 
 /* ══════════════════════════════════════════════════════════
