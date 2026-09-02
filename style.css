@@ -26,6 +26,14 @@ main { position: relative; z-index: 1; }
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   border-bottom: var(--rule);
+  transition: box-shadow var(--t2) var(--ease), background var(--t2) var(--ease);
+}
+
+/* At the top of the page the rule is enough. Once body copy is running
+   underneath the glass, the hairline stops holding the boundary — the blur
+   alone leaves letterforms ghosting through — so the bar takes a shadow. */
+.masthead.is-stuck {
+  box-shadow: var(--lift-2);
 }
 
 .masthead__brand { display: flex; align-items: center; gap: var(--s3); }
@@ -131,6 +139,12 @@ main { position: relative; z-index: 1; }
 .spread__fine { margin-top: var(--s5); }
 
 /* Specification panel — glass, straddling the blue field */
+/* The site's panels lift; the instrument's stay flat. Same component,
+   different job — a page you read wants figure and ground, a control
+   surface wants to sit still. */
+.spread .panel,
+.origin .panel { box-shadow: var(--lift-2); }
+
 .spec { padding: var(--s5); }
 .spec__title {
   padding-bottom: var(--s3);
@@ -456,6 +470,7 @@ main { position: relative; z-index: 1; }
 .field textarea:focus {
   outline: none;
   border-bottom-color: var(--blue);
+  box-shadow: 0 1px 0 0 var(--blue);
 }
 
 .sent { padding: var(--s8) 0; border-top: var(--rule); }
@@ -512,9 +527,9 @@ main { position: relative; z-index: 1; }
 .privacy__body {
   margin-top: var(--s5);
   max-width: 76ch;
-  font-size: var(--fs-12);
-  line-height: 1.72;
-  color: var(--ink-3);
+  font-size: var(--fs-13);
+  line-height: 1.75;
+  color: var(--ink-2);
   columns: 2;
   column-gap: var(--s10);
 }

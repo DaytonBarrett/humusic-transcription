@@ -11,6 +11,12 @@ release blocker, not a warning.
 Markup carrying data-web-only is dropped on the way in. It is for the things
 that make sense on humusic.org and not in a shipped app — the link to the
 source repository being the one that exists today.
+
+An <a data-web-only-link> keeps its contents but loses its anchor, becoming a
+<span>. On the web the masthead brand walks back to the marketing site; in the
+app there is no site to walk back to, and index.html *is* the transcriber, so
+leaving the href in place would turn a stray tap on the wordmark into a reload
+that discards an unsaved score.
 """
 
 import re
@@ -51,7 +57,26 @@ SCAN_SKIP = {"vendor/vexflow.js"}
 #                 its rects that way.
 ALLOWED_HOSTS = {b"www.musicxml.org", b"www.w3.org"}
 
-WEB_ONLY = re.compile(r"<(\w+)(?=[^>]*\bdata-web-only\b)[^>]*>")
+WEB_ONLY = re.compile(r"<(\w+)(?=[^>]*\bdata-web-only(?![\w-]))[^>]*>")
+WEB_ONLY_LINK = re.compile(
+    r"<a\b(?=[^>]*\bdata-web-only-link\b)[^>]*>(.*?)</a\s*>", re.DOTALL | re.IGNORECASE
+)
+CLASS_ATTR = re.compile(r'\bclass\s*=\s*"([^"]*)"', re.IGNORECASE)
+
+
+def unwrap_web_only_links(html: str) -> str:
+    """Turn every <a data-web-only-link> into an inert <span>.
+
+    Only the class survives — href, title and the marker attribute all go,
+    so the element still styles identically and no longer navigates.
+    """
+    def replace(match: "re.Match[str]") -> str:
+        opening = match.group(0)[: match.group(0).index(">") + 1]
+        classes = CLASS_ATTR.search(opening)
+        attr = f' class="{classes.group(1)}"' if classes else ""
+        return f"<span{attr}>{match.group(1)}</span>"
+
+    return WEB_ONLY_LINK.sub(replace, html)
 
 
 def strip_web_only(html: str) -> str:
@@ -101,7 +126,8 @@ def main() -> int:
         dst = WWW / dst_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.suffix == ".html":
-            dst.write_text(strip_web_only(src.read_text(encoding="utf-8")), encoding="utf-8")
+            markup = strip_web_only(src.read_text(encoding="utf-8"))
+            dst.write_text(unwrap_web_only_links(markup), encoding="utf-8")
         else:
             shutil.copy2(src, dst)
 

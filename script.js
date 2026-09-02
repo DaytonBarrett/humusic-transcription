@@ -83,6 +83,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  /* ── Masthead lift ────────────────────────────────────────
+     The bar is frosted glass over a hairline, which reads cleanly against
+     the top of the page and stops reading once body copy is scrolling
+     underneath it. A sentinel at the very top is cheaper and smoother than
+     a scroll listener: no work at all while the page sits still. */
+  if (masthead) {
+    const sentinel = document.createElement('div');
+    sentinel.setAttribute('aria-hidden', 'true');
+    sentinel.style.cssText = 'position:absolute;top:0;left:0;width:1px;height:1px;pointer-events:none;';
+    document.body.prepend(sentinel);
+    new IntersectionObserver(
+      ([entry]) => masthead.classList.toggle('is-stuck', !entry.isIntersecting),
+    ).observe(sentinel);
+  }
+
   /* ── Current-section marker ── */
   const navLinks = $$('.masthead__nav a');
   if (navLinks.length) {

@@ -6,7 +6,16 @@
    navy-black ink taken from the app icon's glyphs, and the
    icon's electric blue used structurally rather than
    decoratively. Depth comes from hairline rules and frosted
-   glass over ruled staves — never from drop shadows.
+   glass over ruled staves.
+
+   The --lift-* scale below is the one concession to shadow,
+   and it is used by the site (style.css) rather than the
+   instrument (app.css): a page of long-form reading needs
+   its cards and its sticky masthead to separate from the
+   paper, which a hairline alone stops doing once text is
+   scrolling underneath. The shadows are tinted with the ink
+   navy, never neutral grey, and stay under 10% — paper lying
+   on paper, not a card floating in a dashboard.
    ═══════════════════════════════════════════════════════════ */
 
 /* ──────────────────────────────────────────────────────────
@@ -76,6 +85,15 @@
   --rule:      1px solid var(--ink);
   --rule-hair: 1px solid var(--hair);
   --rule-2:    2px solid var(--ink);
+
+  /* Elevation — see the note at the top of this file. Ink-tinted, low, and
+     paired: a tight contact shadow that anchors the edge, plus a wide soft
+     one that gives the lift. --lift-inset presses form fields into the page
+     instead of raising them, which is what an input should read as. */
+  --lift-1:     0 1px 2px rgba(6, 18, 37, 0.05), 0 2px 6px rgba(6, 18, 37, 0.04);
+  --lift-2:     0 2px 4px rgba(6, 18, 37, 0.06), 0 8px 20px rgba(6, 18, 37, 0.07);
+  --lift-3:     0 4px 10px rgba(6, 18, 37, 0.08), 0 18px 40px rgba(6, 18, 37, 0.10);
+  --lift-inset: inset 0 1px 2px rgba(6, 18, 37, 0.07);
 
   /* Glass */
   --glass:        rgba(240, 236, 227, 0.60);

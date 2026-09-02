@@ -39,8 +39,24 @@
   align-items: center;
   gap: var(--s3);
   min-width: 0;
+  color: inherit;
+  text-decoration: none;
 }
 .masthead__brand .wordmark { font-size: var(--fs-21); }
+
+/* On the web the brand walks back to humusic.org, so it has to read as a
+   link. The build unwraps it to a <span> in the app bundle, where there is
+   nowhere to walk back to — these rules then simply never apply. */
+a.masthead__brand .appmark,
+a.masthead__brand .wordmark {
+  transition: opacity var(--t1) var(--ease), color var(--t1) var(--ease);
+}
+a.masthead__brand:hover .wordmark { color: var(--blue-deep); }
+a.masthead__brand:hover .appmark { opacity: 0.78; }
+a.masthead__brand:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 4px;
+}
 
 .masthead__rule {
   width: 22px;
