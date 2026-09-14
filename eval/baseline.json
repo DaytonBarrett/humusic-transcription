@@ -1,0 +1,236 @@
+{
+  "scale-quarters": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 8,
+    "estimateCount": 8,
+    "cents": 0
+  },
+  "scale-eighths": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 8,
+    "estimateCount": 8,
+    "cents": 0
+  },
+  "sustain-vibrato": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 3,
+    "estimateCount": 3,
+    "cents": 0
+  },
+  "legato-steps": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 7,
+    "estimateCount": 7,
+    "cents": 0
+  },
+  "low-register": {
+    "onsetPitch": {
+      "precision": 0.8,
+      "recall": 0.6666666666666666,
+      "f": 0.7272727272727272
+    },
+    "full": {
+      "precision": 0.6,
+      "recall": 0.5,
+      "f": 0.5454545454545454
+    },
+    "octaveErrors": 0,
+    "referenceCount": 6,
+    "estimateCount": 5,
+    "cents": 0
+  },
+  "missing-fundamental": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 4,
+    "estimateCount": 4,
+    "cents": 0
+  },
+  "repeated-note": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 0.8333333333333334,
+      "f": 0.9090909090909091
+    },
+    "full": {
+      "precision": 0.6,
+      "recall": 0.5,
+      "f": 0.5454545454545454
+    },
+    "octaveErrors": 0,
+    "referenceCount": 6,
+    "estimateCount": 5,
+    "cents": 0
+  },
+  "long-decay": {
+    "onsetPitch": {
+      "precision": 0.3333333333333333,
+      "recall": 0.5,
+      "f": 0.4
+    },
+    "full": {
+      "precision": 0.3333333333333333,
+      "recall": 0.5,
+      "f": 0.4
+    },
+    "octaveErrors": 0,
+    "referenceCount": 2,
+    "estimateCount": 3,
+    "cents": 0
+  },
+  "triplets": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 8,
+    "estimateCount": 8,
+    "cents": 0
+  },
+  "mixed-rhythm": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 6,
+    "estimateCount": 6,
+    "cents": 0
+  },
+  "wide-leaps": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 5,
+    "estimateCount": 5,
+    "cents": 0
+  },
+  "breathy-sustain": {
+    "onsetPitch": {
+      "precision": 0.8,
+      "recall": 1,
+      "f": 0.888888888888889
+    },
+    "full": {
+      "precision": 0.6,
+      "recall": 0.75,
+      "f": 0.6666666666666665
+    },
+    "octaveErrors": 0,
+    "referenceCount": 4,
+    "estimateCount": 5,
+    "cents": 0
+  },
+  "noisy-room": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 0.875,
+      "recall": 0.875,
+      "f": 0.875
+    },
+    "octaveErrors": 0,
+    "referenceCount": 8,
+    "estimateCount": 8,
+    "cents": 0
+  },
+  "quiet-take": {
+    "onsetPitch": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "full": {
+      "precision": 1,
+      "recall": 1,
+      "f": 1
+    },
+    "octaveErrors": 0,
+    "referenceCount": 8,
+    "estimateCount": 8,
+    "cents": 0
+  },
+  "__mean": {
+    "onsetPitch": 0.9232323232323233,
+    "full": 0.8594696969696969,
+    "octaves": 0
+  },
+  "__harmony": {
+    "chords": 0.925,
+    "roman": 0.925,
+    "keys": 10
+  }
+}
