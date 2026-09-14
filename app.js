@@ -73,14 +73,15 @@ function noteToStaffStep(noteName) {
    De Cheveigné & Kawahara's autocorrelation-based estimator —
    far more resistant to octave errors than a raw FFT peak,
    which is why it's the standard choice for monophonic tuners.
-   Returns { frequency, clarity } or null when no periodic
-   signal is found (silence / noise / unpitched).
 
    The lag search is bounded to the musical range rather than
    running to half the window. Lags longer than the lowest note
    we accept cannot be a melody — they are room rumble and
    handling noise, and letting YIN dip into them is one way a
    held note picks up a stray sub-audible reading mid-sustain.
+
+   Returns { frequency, clarity } or null when no periodic
+   signal is found (silence / noise / unpitched).
 ══════════════════════════════════════════════════════════ */
 
 // How unlike itself a window may be and still count as pitched at all.
@@ -92,6 +93,7 @@ const MAX_APERIODICITY = 0.35;
 // clean tone the best score is near zero, and a percentage of nearly zero
 // would reject the true period for being a hair worse than its own multiple.
 const SUBHARMONIC_ALLOWANCE = 0.06;
+
 function yinDetectPitch(buffer, sampleRate, minFreq = MIN_PITCH_HZ, maxFreq = MAX_PITCH_HZ) {
   const half = buffer.length >> 1;
   if (half < 32) return null;
@@ -143,6 +145,17 @@ function yinDetectPitch(buffer, sampleRate, minFreq = MIN_PITCH_HZ, maxFreq = MA
   }
   if (bestValue > MAX_APERIODICITY) return null;
 
+  // Sub-sample precision: fit a parabola through the dip and take its vertex.
+  const refine = (tau) => {
+    const x0 = tau < 1 ? tau : tau - 1;
+    const x2 = tau + 1 <= maxTau ? tau + 1 : tau;
+    if (x0 === tau) return yinBuffer[tau] <= yinBuffer[x2] ? tau : x2;
+    if (x2 === tau) return yinBuffer[tau] <= yinBuffer[x0] ? tau : x0;
+    const s0 = yinBuffer[x0], s1 = yinBuffer[tau], s2 = yinBuffer[x2];
+    const denom = 2 * (2 * s1 - s2 - s0);
+    return denom === 0 ? tau : tau + (s2 - s0) / denom;
+  };
+
   const ceiling = bestValue + SUBHARMONIC_ALLOWANCE;
   let tauEstimate = -1;
   for (let tau = minTau + 1; tau < maxTau; tau++) {
@@ -158,22 +171,8 @@ function yinDetectPitch(buffer, sampleRate, minFreq = MIN_PITCH_HZ, maxFreq = MA
   // where there is no dip to find.
   if (tauEstimate === -1) tauEstimate = deepestTau;
 
-  // Step 4: parabolic interpolation around the minimum for sub-sample precision.
-  const x0 = tauEstimate < 1 ? tauEstimate : tauEstimate - 1;
-  const x2 = tauEstimate + 1 <= maxTau ? tauEstimate + 1 : tauEstimate;
-  let betterTau;
-  if (x0 === tauEstimate) {
-    betterTau = yinBuffer[tauEstimate] <= yinBuffer[x2] ? tauEstimate : x2;
-  } else if (x2 === tauEstimate) {
-    betterTau = yinBuffer[tauEstimate] <= yinBuffer[x0] ? tauEstimate : x0;
-  } else {
-    const s0 = yinBuffer[x0], s1 = yinBuffer[tauEstimate], s2 = yinBuffer[x2];
-    const denom = 2 * (2 * s1 - s2 - s0);
-    betterTau = denom === 0 ? tauEstimate : tauEstimate + (s2 - s0) / denom;
-  }
-
   return {
-    frequency: sampleRate / betterTau,
+    frequency: sampleRate / refine(tauEstimate),
     clarity: 1 - yinBuffer[tauEstimate],
   };
 }
@@ -298,12 +297,46 @@ function prepareSignal(samples, sampleRate) {
   return { data, rate: sampleRate / factor };
 }
 
+/* The shortest window worth running YIN over, as a count of periods of the
+   lowest note we accept — three, which is the fewest a difference function
+   can find a period from at all.
+
+   Clipping a window to the note it belongs to is worth doing right up to
+   this point and not past it. A run of closely-spaced onsets, which is what
+   the level detector produces on a low plucked string, would otherwise chop
+   the windows down to a few tens of milliseconds and leave a bass note with
+   barely one period to be measured from — at which point the clipping meant
+   to fix the seam has caused a worse error than the seam. */
+const MIN_PITCH_WINDOW_SECONDS = 3 / MIN_PITCH_HZ;
+
+/* Keeps the analysis window inside the note it is measuring.
+
+   A window centred on a frame near a note change contains both notes, and
+   YIN obligingly finds the period of the mixture — which is neither, and is
+   usually far too low, because the two together repeat only over their
+   common multiple. That is the single largest source of error in this
+   detector: it writes a spurious very low note at almost every boundary and
+   pushes the real one late.
+
+   Onsets are already known by the time pitch is measured, so the window can
+   simply be held inside them: pinned to the segment the frame's centre falls
+   in, slid rather than shrunk while there is room to slide, and shortened
+   only when the segment itself is shorter than a window. */
+function windowWithin(centre, window, from, to) {
+  const room = to - from;
+  if (room <= window) return [from, to];
+  let start = Math.round(centre - window / 2);
+  if (start < from) start = from;
+  if (start + window > to) start = to - window;
+  return [start, start + window];
+}
+
 /* One entry per grid frame. `midi` is a float — or null where nothing pitched
    was found — and `strong`/`audible` are the two sides of the voicing
    hysteresis: `strong` is loud enough to begin a note, `audible` only loud
    enough to keep one going. `filled` marks a frame bridged across a dropout
    rather than measured. */
-function measureFrames(signal, framesPerSecond) {
+function measureFrames(signal, framesPerSecond, onsetTimes = []) {
   const { data, rate } = signal;
   const frameSamples = Math.max(1, Math.round(rate / framesPerSecond));
   const count = Math.floor(data.length / frameSamples);
@@ -319,6 +352,11 @@ function measureFrames(signal, framesPerSecond) {
   const onThreshold = Math.max(SILENCE_RMS, peak * VOICED_PEAK_RATIO);
   const offThreshold = onThreshold * RELEASE_RATIO;
   const window = Math.round(rate * PITCH_WINDOW_SECONDS);
+  const shortest = Math.round(rate * MIN_PITCH_WINDOW_SECONDS);
+
+  // The boundaries a window may not cross, in samples, with the ends of the
+  // recording standing in as the outermost two.
+  const bounds = [0, ...onsetTimes.map((time) => Math.round(time * rate)), data.length];
 
   for (let i = 0; i < count; i++) {
     // Below the release threshold nothing can be voiced however it sounds,
@@ -328,11 +366,15 @@ function measureFrames(signal, framesPerSecond) {
     frames[i].strong = frames[i].energy >= onThreshold;
 
     const centre = i * frameSamples + frameSamples / 2;
-    let start = Math.round(centre - window / 2);
-    let end = start + window;
-    if (start < 0) { end -= start; start = 0; }
-    if (end > data.length) { start -= end - data.length; end = data.length; }
-    start = Math.max(0, start);
+    let segment = 0;
+    while (segment + 2 < bounds.length && bounds[segment + 1] <= centre) segment++;
+
+    let [start, end] = windowWithin(centre, window, bounds[segment], bounds[segment + 1]);
+    // A segment too short to measure gets the unclipped window back: a bad
+    // reading is recoverable downstream, no reading at all is a hole.
+    if (end - start < shortest) {
+      [start, end] = windowWithin(centre, window, 0, data.length);
+    }
 
     const result = yinDetectPitch(data.subarray(start, end), rate);
     const midi = result ? frequencyToMidi(result.frequency) : null;
@@ -400,7 +442,7 @@ const ONSET_STILL_CLIMBING = 1.15;
 // Two attacks closer together than this are one attack seen twice.
 const MIN_ONSET_GAP_SECONDS = 0.05;
 
-function detectOnsets(signal) {
+function detectLevelOnsets(signal) {
   const { data, rate } = signal;
   const hop = Math.max(1, Math.round(rate * ONSET_HOP_SECONDS));
   const window = Math.max(hop, Math.round(rate * ONSET_WINDOW_SECONDS));
@@ -437,6 +479,877 @@ function detectOnsets(signal) {
     lastIndex = i;
   }
   return onsets;
+}
+
+/* ── Spectral flux ──
+
+   Level finds an attack only when the attack is louder. Two of the three
+   ways a note actually starts are not:
+
+     a note re-struck while the one before it is still ringing, where the
+     new attack is quieter than the decay it arrives in the middle of;
+
+     a slurred or bowed change, where the pitch moves and the level does
+     not move at all.
+
+   Both are perfectly visible as a change in *which* frequencies are
+   sounding, which is what spectral flux measures: the sum of the increases
+   bin by bin from one spectrum to the next. A new note lights up a new set
+   of partials whether or not it lights them brighter.
+
+   Plain flux has one bad failure, and it is the one that matters most here:
+   vibrato. A pitch sliding back and forth across a bin boundary reads as a
+   rise in the bin it is arriving at, over and over, and every wobble becomes
+   an onset. Böck & Widmer's fix is a maximum filter across frequency before
+   the difference is taken — a partial that has merely moved a little is
+   still covered by the widened trace of where it just was, so it contributes
+   nothing, while a genuinely new partial is not covered by anything and
+   contributes in full. They measured up to 60% fewer false positives on
+   vibrato-heavy material with no additional misses, which is the whole
+   reason this is worth an FFT. */
+const FLUX_FRAME = 1024;
+/* 8ms, which puts the quantisation of an onset time at ±4ms — a twelfth of
+   a grid frame at the fastest tempo the app accepts, and far inside the
+   tolerance anything downstream reads it to. Böck's reference implementation
+   hops 5ms; the difference is not measurable here and the transform is the
+   most expensive thing in the analysis, so the coarser hop is free accuracy
+   per second of waiting. */
+const FLUX_HOP_SECONDS = 0.008;
+const FLUX_BANDS_PER_OCTAVE = 24;
+const FLUX_LOW_HZ = 55;
+const FLUX_HIGH_HZ = 8000;
+
+// How far back the difference reaches. One hop is too short to see past the
+// attack's own rise time; three is long enough that a fast trill reads as
+// one event. Two is 10ms, about the length of an attack transient.
+const FLUX_DIFF_FRAMES = 2;
+
+// Width of the maximum filter, in bands. Three bands at 24 to the octave
+// covers a semitone either side — more vibrato than anyone sings.
+const FLUX_MAX_BANDS = 3;
+
+/* Peak picking. A flux peak counts as an onset when it is the largest value
+   anywhere nearby and stands clear of the local average by a margin — one
+   test alone is not enough, because the largest value nearby is still a
+   local maximum in a passage of silence, and standing clear of the average
+   happens all the way up the side of a single broad peak. */
+const FLUX_PRE_MAX_SECONDS = 0.03;
+const FLUX_POST_MAX_SECONDS = 0.03;
+const FLUX_PRE_AVG_SECONDS = 0.10;
+const FLUX_POST_AVG_SECONDS = 0.07;
+const FLUX_DELTA = 0.25;
+
+/* The rest of the bar, in local standard deviations.
+
+   A fixed margin above the local average is a bar set for one recording and
+   wrong for the next. Broadband noise raises the flux everywhere — a hissy
+   room is a hundred small rises per second — and a margin that clears the
+   hiss in a clean take is well inside it in a noisy one, which is how a
+   scale recorded across the room comes out with half again as many notes as
+   were played. The spread of the flux nearby measures exactly that hiss, so
+   the bar is raised by it: quiet takes are judged as before, noisy ones have
+   to produce a rise that stands out from their own noise. */
+const FLUX_SPREAD = 2.0;
+
+/* Twiddle factors, built once per transform size and kept.
+
+   They are the same numbers for every frame, and a three-minute take is
+   forty thousand frames — computing a sine and a cosine inside the butterfly
+   is most of a minute of trigonometry to arrive back at the same table forty
+   thousand times. */
+const twiddleTables = new Map();
+function twiddles(n) {
+  let table = twiddleTables.get(n);
+  if (!table) {
+    const re = new Float64Array(n / 2);
+    const im = new Float64Array(n / 2);
+    for (let i = 0; i < n / 2; i++) {
+      re[i] = Math.cos((-2 * Math.PI * i) / n);
+      im[i] = Math.sin((-2 * Math.PI * i) / n);
+    }
+    table = { re, im };
+    twiddleTables.set(n, table);
+  }
+  return table;
+}
+
+// In-place iterative radix-2 Cooley-Tukey. Length must be a power of two.
+function fft(re, im) {
+  const n = re.length;
+  const w = twiddles(n);
+
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+
+  for (let len = 2; len <= n; len <<= 1) {
+    const half = len >> 1;
+    const stride = n / len;
+    for (let i = 0; i < n; i += len) {
+      for (let k = 0; k < half; k++) {
+        const wr = w.re[k * stride];
+        const wi = w.im[k * stride];
+        const a = i + k;
+        const b = a + half;
+        const tr = re[b] * wr - im[b] * wi;
+        const ti = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti;
+        re[a] += tr;        im[a] += ti;
+      }
+    }
+  }
+}
+
+/* Triangular filters spaced logarithmically, which is what makes the
+   maximum filter above mean the same thing at every pitch: three bands is a
+   fixed interval rather than a fixed number of hertz, so it covers a
+   semitone of vibrato on a bass note and on a top note alike. Linear FFT
+   bins cannot do that — three bins is a semitone at 200Hz and a hundredth of
+   one at 5kHz. */
+function logFilterbank(binCount, rate) {
+  const nyquist = rate / 2;
+  const high = Math.min(FLUX_HIGH_HZ, nyquist * 0.95);
+  const bandCount = Math.floor(Math.log2(high / FLUX_LOW_HZ) * FLUX_BANDS_PER_OCTAVE);
+  const edges = [];
+  for (let i = 0; i <= bandCount + 1; i++) {
+    edges.push((FLUX_LOW_HZ * Math.pow(2, i / FLUX_BANDS_PER_OCTAVE) * binCount) / nyquist);
+  }
+
+  const bands = [];
+  for (let i = 0; i < bandCount; i++) {
+    const from = Math.max(0, Math.floor(edges[i]));
+    const to = Math.min(binCount - 1, Math.ceil(edges[i + 2]));
+    if (to > from) bands.push({ from, to, peak: edges[i + 1] });
+  }
+  return bands;
+}
+
+function superfluxOnsets(signal) {
+  const { data, rate } = signal;
+  const hop = Math.max(1, Math.round(rate * FLUX_HOP_SECONDS));
+  const frameCount = Math.floor((data.length - FLUX_FRAME) / hop);
+  if (frameCount < FLUX_DIFF_FRAMES + 4) return [];
+
+  const hann = new Float32Array(FLUX_FRAME);
+  for (let i = 0; i < FLUX_FRAME; i++) hann[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / FLUX_FRAME);
+
+  const bins = FLUX_FRAME / 2;
+  const bands = logFilterbank(bins, rate);
+  const spectra = [];
+
+  const re = new Float64Array(FLUX_FRAME);
+  const im = new Float64Array(FLUX_FRAME);
+  const magnitude = new Float64Array(bins);
+  for (let f = 0; f < frameCount; f++) {
+    const at = f * hop;
+    for (let i = 0; i < FLUX_FRAME; i++) { re[i] = data[at + i] * hann[i]; im[i] = 0; }
+    fft(re, im);
+
+    // Magnitude once per bin rather than once per band that overlaps it:
+    // the triangles share their skirts, so a bin belongs to two or three of
+    // them and would otherwise have its square root taken as many times.
+    for (let k = 0; k < bins; k++) magnitude[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+
+    // Logarithmic magnitude: a partial arriving over a quiet passage and the
+    // same partial arriving over a loud one are the same musical event, and
+    // only a log scale counts them the same.
+    const band = new Float32Array(bands.length);
+    bands.forEach(({ from, to, peak }, b) => {
+      let sum = 0;
+      const width = to - from + 1;
+      for (let k = from; k <= to; k++) {
+        const weight = 1 - Math.abs(k - peak) / width;
+        if (weight > 0) sum += weight * magnitude[k];
+      }
+      band[b] = Math.log10(1 + sum * 20);
+    });
+    spectra.push(band);
+  }
+
+  const flux = new Float32Array(frameCount);
+  const widened = new Float32Array(bands.length);
+  for (let f = FLUX_DIFF_FRAMES; f < frameCount; f++) {
+    const before = spectra[f - FLUX_DIFF_FRAMES];
+    for (let b = 0; b < bands.length; b++) {
+      let peak = 0;
+      const from = Math.max(0, b - (FLUX_MAX_BANDS >> 1));
+      const to = Math.min(bands.length - 1, b + (FLUX_MAX_BANDS >> 1));
+      for (let k = from; k <= to; k++) if (before[k] > peak) peak = before[k];
+      widened[b] = peak;
+    }
+    let sum = 0;
+    const now = spectra[f];
+    for (let b = 0; b < bands.length; b++) {
+      const rise = now[b] - widened[b];
+      if (rise > 0) sum += rise;
+    }
+    flux[f] = sum;
+  }
+
+  let loudest = 0;
+  for (let f = 0; f < frameCount; f++) if (flux[f] > loudest) loudest = flux[f];
+  if (loudest <= 0) return [];
+  for (let f = 0; f < frameCount; f++) flux[f] /= loudest;
+
+  const inFrames = (seconds) => Math.max(1, Math.round(seconds / FLUX_HOP_SECONDS));
+  const preMax = inFrames(FLUX_PRE_MAX_SECONDS);
+  const postMax = inFrames(FLUX_POST_MAX_SECONDS);
+  const preAvg = inFrames(FLUX_PRE_AVG_SECONDS);
+  const postAvg = inFrames(FLUX_POST_AVG_SECONDS);
+  const minGap = inFrames(MIN_ONSET_GAP_SECONDS);
+
+  const onsets = [];
+  let last = -minGap;
+  for (let f = FLUX_DIFF_FRAMES; f < frameCount; f++) {
+    if (f - last < minGap) continue;
+
+    let isPeak = true;
+    for (let k = Math.max(0, f - preMax); k <= Math.min(frameCount - 1, f + postMax); k++) {
+      if (flux[k] > flux[f]) { isPeak = false; break; }
+    }
+    if (!isPeak) continue;
+
+    let sum = 0;
+    let squares = 0;
+    let n = 0;
+    for (let k = Math.max(0, f - preAvg); k <= Math.min(frameCount - 1, f + postAvg); k++) {
+      sum += flux[k];
+      squares += flux[k] * flux[k];
+      n++;
+    }
+    const mean = sum / n;
+    const spread = Math.sqrt(Math.max(0, squares / n - mean * mean));
+    if (flux[f] < mean + FLUX_DELTA + FLUX_SPREAD * spread) continue;
+
+    // The flux frame is named for the window's start, but the rise it
+    // measures happened across the difference span that ends there.
+    onsets.push((f * hop + FLUX_FRAME / 2) / rate - FLUX_DIFF_FRAMES * FLUX_HOP_SECONDS);
+    last = f;
+  }
+  return onsets;
+}
+
+/* Both detectors, merged.
+
+   Neither alone is enough and they fail differently, which is the whole
+   argument for running both: level misses everything that starts without
+   getting louder, flux misses a repeated note played so evenly that the
+   spectrum barely changes. Anything either one is sure about is taken, and
+   two findings closer together than the minimum gap are one attack that both
+   detectors saw — kept once, at the earlier time, since a detector reports
+   an attack once it is under way rather than before. */
+function detectOnsets(signal) {
+  const merged = [...detectLevelOnsets(signal), ...superfluxOnsets(signal)].sort((a, b) => a - b);
+  const onsets = [];
+  for (const time of merged) {
+    if (!onsets.length || time - onsets[onsets.length - 1] >= MIN_ONSET_GAP_SECONDS) onsets.push(time);
+  }
+  return onsets;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CHROMA
+   What pitch classes are sounding, beat by beat — the measure
+   a chord is read from.
+
+   Pitch detection asks "what one note is this", which a chord
+   has no answer to. Chroma asks a question a chord can answer:
+   how much of each of the twelve pitch classes is present,
+   with octave thrown away. Two guitarists voicing G major up
+   and down the neck produce quite different spectra and very
+   nearly the same chroma, which is the whole point — the
+   voicing is what changes and the harmony is what does not.
+══════════════════════════════════════════════════════════ */
+
+/* Long, and it has to be. The spacing between adjacent semitones at the
+   guitar's low E is under 5Hz, so a transform that cannot resolve 5Hz cannot
+   tell that string from its neighbour — and the bass note is exactly what
+   decides whether a chord is written G or G/B. 8192 samples at the decimated
+   rate is a third of a second, which is coarse in time and entirely adequate:
+   chords change on beats, not on sixteenths. */
+const CHROMA_FRAME = 8192;
+
+// Four readings a beat. Faster than any chord changes, slow enough that the
+// transform cost stays in proportion to the rest of the analysis.
+const CHROMA_PER_BEAT = 4;
+
+// The range worth folding. Below E1 there is nothing but rumble the high
+// pass has already taken out; above C7 a guitar has only harmonics, and
+// harmonics of notes already counted lower down.
+const CHROMA_LOW_MIDI = 28;
+const CHROMA_HIGH_MIDI = 96;
+
+/* Finding the bass note is finding the *lowest* note sounding, which is not
+   the same as the loudest note low down and is the difference between G and
+   G/B. An open G is voiced G-B-D-G-B-G: read as "the strongest pitch class
+   below middle C" it answers B, because B is in there twice, and every plain
+   chord in the take comes out as a first inversion.
+
+   So the spectrum is read upward and the first real note wins. This far
+   below the strongest thing in the bass register counts as real. */
+const BASS_FLOOR_RATIO = 0.45;
+const BASS_HIGH_MIDI = 60;
+
+/* How much of a note's harmonic series to subtract from the bins above it.
+
+   This is the one thing that makes chord recognition from a guitar work at
+   all. A plucked string is not one frequency: the fifth partial of a low E
+   is a G#, four octaves and a third up, loud enough to read as a real note.
+   So an E minor chord arrives carrying a strong G# it does not contain — the
+   major third — and template matching calls it E major. Mauch & Dixon solve
+   this properly, with a non-negative least squares fit of the whole spectrum
+   against a dictionary of note profiles; this is the cheap version of the
+   same idea, sweeping from the bottom up and taking each note's expected
+   partials back out of the bins they land in before those bins are read.
+
+   Partial strengths fall as 1/h, which is roughly what a plucked string
+   does, and only a fraction is removed: taking the whole expected partial
+   out would delete a real note that happens to sit on a harmonic of a lower
+   one, which in tonal music is most of them. */
+const HARMONIC_DECAY = 0.6;
+const HARMONIC_PARTIALS = 6;
+
+const midiToHz = (midi) => 440 * Math.pow(2, (midi - 69) / 12);
+
+/* One row per frame, one column per semitone, from CHROMA_LOW_MIDI up.
+
+   Each semitone collects the transform bins within fifty cents of its centre
+   — the band that belongs to it and to no other note. */
+function semitoneSpectra(signal, framesPerSecond) {
+  const { data, rate } = signal;
+  const hop = Math.max(1, Math.round(rate / framesPerSecond));
+  const frameCount = Math.floor((data.length - CHROMA_FRAME) / hop) + 1;
+  if (frameCount < 1) return { spectra: [], hop, rate };
+
+  const hann = new Float32Array(CHROMA_FRAME);
+  for (let i = 0; i < CHROMA_FRAME; i++) hann[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / CHROMA_FRAME);
+
+  const bins = CHROMA_FRAME / 2;
+  const semitones = CHROMA_HIGH_MIDI - CHROMA_LOW_MIDI + 1;
+
+  /* Which semitone each transform bin belongs to — a partition, one bin to
+     one note, worked out once.
+
+     Collecting "every bin within fifty cents of the centre" instead looks
+     more careful and is wrong at the bottom of the range, where a semitone
+     is narrower than a bin: neighbouring notes then claim the same bin and
+     come back holding the same number, at which point neither is a strict
+     peak and the skirt test below cannot tell them apart. */
+  const owner = new Int16Array(bins);
+  owner.fill(-1);
+  for (let k = 1; k < bins; k++) {
+    const midi = Math.round(69 + 12 * Math.log2(((k * rate) / CHROMA_FRAME) / 440));
+    if (midi >= CHROMA_LOW_MIDI && midi <= CHROMA_HIGH_MIDI) owner[k] = midi - CHROMA_LOW_MIDI;
+  }
+
+  const re = new Float64Array(CHROMA_FRAME);
+  const im = new Float64Array(CHROMA_FRAME);
+  const spectra = [];
+
+  for (let f = 0; f < frameCount; f++) {
+    const at = f * hop;
+    for (let i = 0; i < CHROMA_FRAME; i++) { re[i] = (data[at + i] || 0) * hann[i]; im[i] = 0; }
+    fft(re, im);
+
+    const raw = new Float32Array(semitones);
+    for (let k = 1; k < bins; k++) {
+      const s = owner[k];
+      if (s < 0) continue;
+      const power = re[k] * re[k] + im[k] * im[k];
+      if (power > raw[s]) raw[s] = power;
+    }
+    for (let s = 0; s < semitones; s++) raw[s] = Math.sqrt(raw[s]);
+
+    /* Only the semitones that are peaks survive.
+
+       A transform of a third of a second resolves about 5Hz, and at the
+       guitar's low E a semitone is 4.8Hz — so a plucked bottom string spills
+       into the bins either side of it at very nearly its own strength. Read
+       as written, that makes the note below the root look like a note, which
+       is how every chord in a take comes out as a maj7 over its own leading
+       tone. A skirt falls away on both sides of the note that cast it and a
+       real note does not, so requiring a local maximum removes the one and
+       keeps the other. */
+    const row = new Float32Array(semitones);
+    for (let s = 0; s < semitones; s++) {
+      const below = s > 0 ? raw[s - 1] : 0;
+      const above = s < semitones - 1 ? raw[s + 1] : 0;
+      if (raw[s] >= below && raw[s] >= above) row[s] = raw[s];
+    }
+    spectra.push(row);
+  }
+
+  return { spectra, hop, rate };
+}
+
+/* Takes each note's harmonics back out of the bins above it, bottom upward.
+
+   Bottom upward because a partial always lies above the note that produced
+   it: by the time a bin is read, everything that could have contributed a
+   harmonic to it has already been processed and its share removed. */
+function subtractHarmonics(row) {
+  const cleaned = Float32Array.from(row);
+  for (let s = 0; s < cleaned.length; s++) {
+    const strength = cleaned[s];
+    if (strength <= 0) continue;
+    for (let h = 2; h <= HARMONIC_PARTIALS; h++) {
+      const above = s + Math.round(12 * Math.log2(h));
+      if (above >= cleaned.length) break;
+      cleaned[above] = Math.max(0, cleaned[above] - (HARMONIC_DECAY * strength) / h);
+    }
+  }
+  return cleaned;
+}
+
+/* The lowest note actually sounding, as a pitch class and how sure we are.
+
+   Confidence is what keeps a wrong answer from doing damage: on a strummed
+   chord the bottom string is unmistakable, and in a picked passage where the
+   bass has already died away there is no bass note to find, so the reading
+   carries little weight rather than inventing an inversion. */
+function lowestNote(row) {
+  let peak = 0;
+  const top = Math.min(row.length - 1, BASS_HIGH_MIDI - CHROMA_LOW_MIDI);
+  for (let s = 0; s <= top; s++) if (row[s] > peak) peak = row[s];
+  if (peak <= 0) return null;
+
+  for (let s = 0; s <= top; s++) {
+    if (row[s] < peak * BASS_FLOOR_RATIO) continue;
+    return { pc: (CHROMA_LOW_MIDI + s) % 12, strength: Math.min(1, row[s] / peak) };
+  }
+  return null;
+}
+
+// Folds a semitone spectrum into twelve pitch classes, normalized so that
+// loud and quiet passages are compared on shape rather than on level.
+function foldChroma(row, fromMidi = CHROMA_LOW_MIDI, toMidi = CHROMA_HIGH_MIDI) {
+  const chroma = new Float32Array(12);
+  for (let s = 0; s < row.length; s++) {
+    const midi = CHROMA_LOW_MIDI + s;
+    if (midi < fromMidi || midi > toMidi) continue;
+    chroma[midi % 12] += row[s];
+  }
+  let total = 0;
+  for (const v of chroma) total += v;
+  if (total > 0) for (let i = 0; i < 12; i++) chroma[i] /= total;
+  return chroma;
+}
+
+/* ══════════════════════════════════════════════════════════
+   CHORDS
+   Which chord best explains a chroma reading.
+
+   The qualities a guitarist actually plays, in the order a
+   tie should be broken — a plain triad beats an extended
+   chord that fits the same notes, because a G major chroma
+   with a little noise on the F also fits G7, and the simpler
+   reading is right far more often than not.
+══════════════════════════════════════════════════════════ */
+const CHORD_QUALITIES = [
+  { suffix: '',      name: 'major',          intervals: [0, 4, 7] },
+  { suffix: 'm',     name: 'minor',          intervals: [0, 3, 7] },
+  { suffix: '7',     name: 'dominant 7th',   intervals: [0, 4, 7, 10] },
+  { suffix: 'm7',    name: 'minor 7th',      intervals: [0, 3, 7, 10] },
+  { suffix: 'maj7',  name: 'major 7th',      intervals: [0, 4, 7, 11] },
+  { suffix: 'sus4',  name: 'suspended 4th',  intervals: [0, 5, 7] },
+  { suffix: 'sus2',  name: 'suspended 2nd',  intervals: [0, 2, 7] },
+  { suffix: '6',     name: 'major 6th',      intervals: [0, 4, 7, 9] },
+  { suffix: 'm6',    name: 'minor 6th',      intervals: [0, 3, 7, 9] },
+  { suffix: 'dim',   name: 'diminished',     intervals: [0, 3, 6] },
+  { suffix: 'm7b5',  name: 'half-diminished',intervals: [0, 3, 6, 10] },
+  { suffix: 'dim7',  name: 'diminished 7th', intervals: [0, 3, 6, 9] },
+  { suffix: 'aug',   name: 'augmented',      intervals: [0, 4, 8] },
+];
+
+/* What energy on a pitch class the chord does not contain costs, against
+   what energy on one it does contain earns. Without the penalty every
+   four-note chord beats every three-note one, because adding a note can only
+   add evidence — the penalty is what makes a triad the better answer when
+   the fourth note is not really there. */
+const OUTSIDE_PENALTY = 0.9;
+
+// A flat charge per note in the chord, paid before anything is earned. Two
+// chords that fit equally well are not equally likely, and the simpler one
+// wins by this much.
+const COMPLEXITY_COST = 0.07;
+
+/* How much of the score the bass note is worth. A first-inversion C and a
+   root-position Am share two notes out of three and are told apart mostly by
+   what is underneath them. */
+const BASS_WEIGHT = 0.28;
+
+/* What an inversion earns against a root position, having found its bass in
+   the chord either way.
+
+   Some pairs of chords are the same set of pitch classes and nothing else
+   can separate them: A minor 7th is A-C-E-G and a C major 6th is C-E-G-A,
+   the same four notes, and which one was played is decided entirely by which
+   is at the bottom. Naming the chord from the note underneath it is right far
+   more often than not — so an inversion has to be worth reading as one, and
+   a root position is the answer when nothing argues otherwise. */
+const INVERSION_DISCOUNT = 0.45;
+
+// Below this, nothing convincing is sounding and the beat gets no chord
+// rather than the least bad one.
+const CHORD_FLOOR = 0.055;
+
+function scoreChord(chroma, bass, root, quality) {
+  const inChord = new Array(12).fill(false);
+  for (const interval of quality.intervals) inChord[(root + interval) % 12] = true;
+
+  let inside = 0;
+  let outside = 0;
+  for (let pc = 0; pc < 12; pc++) {
+    if (inChord[pc]) inside += chroma[pc];
+    else outside += chroma[pc];
+  }
+
+  let score = inside / Math.sqrt(quality.intervals.length)
+    - OUTSIDE_PENALTY * (outside / Math.sqrt(12 - quality.intervals.length))
+    - COMPLEXITY_COST * quality.intervals.length;
+
+  // The bass earns only for a note the chord actually contains; a bass on a
+  // non-chord tone is evidence against the chord, not for a slash reading.
+  if (bass) {
+    const standing = bass.pc === root ? 1 : inChord[bass.pc] ? INVERSION_DISCOUNT : -1;
+    score += BASS_WEIGHT * standing * bass.strength;
+  }
+  return score;
+}
+
+/* The best chord for one chroma reading, or null if nothing fits.
+
+   `bass` carries the lowest pitch class that is sounding strongly, which is
+   what turns a chord into a slash chord: the same three notes with a B
+   underneath is G/B, and a guitarist who played it that way wants to read it
+   that way. */
+function bestChord(chroma, bass) {
+  let best = null;
+  for (let root = 0; root < 12; root++) {
+    for (const quality of CHORD_QUALITIES) {
+      const score = scoreChord(chroma, bass, root, quality);
+      if (!best || score > best.score) best = { root, quality, score };
+    }
+  }
+  if (!best || best.score < CHORD_FLOOR) return null;
+
+  const tones = best.quality.intervals.map((i) => (best.root + i) % 12);
+  const inversion = bass && bass.pc !== best.root && tones.includes(bass.pc) ? bass.pc : null;
+  return { root: best.root, quality: best.quality, bass: inversion, score: best.score };
+}
+
+/* ══════════════════════════════════════════════════════════
+   KEY
+   Roman numerals are relative, so before a chord can be given
+   a function there has to be something to have a function in.
+
+   Albrecht & Shanahan's profiles, compared by Euclidean
+   distance rather than correlation, which is how they were
+   derived and measured — around 90% on their corpus against
+   roughly 74% for the Krumhansl-Schmuckler profiles the method
+   is usually taught with.
+══════════════════════════════════════════════════════════ */
+const KEY_PROFILES = {
+  major: [0.238, 0.006, 0.111, 0.006, 0.137, 0.094, 0.016, 0.214, 0.009, 0.080, 0.008, 0.081],
+  minor: [0.220, 0.006, 0.104, 0.123, 0.019, 0.103, 0.012, 0.214, 0.062, 0.022, 0.061, 0.052],
+};
+
+/* The key of a whole take, from the pitch classes it spends its time on.
+
+   Weighted by how long each chord sounds rather than how many there are: a
+   bar of tonic and a passing chord on the last eighth are not equal evidence,
+   and counting them equally is the classic way to land a fifth away. */
+function detectKey(track) {
+  const weighted = new Float32Array(12);
+  for (const entry of track) {
+    if (!entry.chord) continue;
+    for (const interval of entry.chord.quality.intervals) {
+      weighted[(entry.chord.root + interval) % 12] += entry.units;
+    }
+  }
+
+  let total = 0;
+  for (const v of weighted) total += v;
+  if (!total) return null;
+  for (let i = 0; i < 12; i++) weighted[i] /= total;
+
+  let best = null;
+  for (const [mode, profile] of Object.entries(KEY_PROFILES)) {
+    for (let tonic = 0; tonic < 12; tonic++) {
+      let distance = 0;
+      for (let pc = 0; pc < 12; pc++) {
+        const gap = weighted[(tonic + pc) % 12] - profile[pc];
+        distance += gap * gap;
+      }
+      if (!best || distance < best.distance) best = { tonic, mode, distance };
+    }
+  }
+  return best;
+}
+
+/* ══════════════════════════════════════════════════════════
+   ROMAN NUMERALS
+   What a chord is doing, rather than what it is called.
+══════════════════════════════════════════════════════════ */
+const NUMERALS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
+
+// Semitones above the tonic for each degree of the scale, major and minor.
+// Minor uses the natural form, so a raised leading note comes out as a
+// chromatic alteration of VII — which is what it is.
+const MAJOR_DEGREES = [0, 2, 4, 5, 7, 9, 11];
+const MINOR_DEGREES = [0, 2, 3, 5, 7, 8, 10];
+
+// Figured bass, by how many notes the chord has and which one is underneath.
+const TRIAD_FIGURES = ['', '6', '6/4'];
+const SEVENTH_FIGURES = ['7', '6/5', '4/3', '4/2'];
+
+const MINOR_QUALITIES = new Set(['m', 'm7', 'dim', 'm7b5', 'dim7', 'm6']);
+
+/* Writes the degree, with an accidental when the root is not in the key.
+
+   A chromatic root is named from the nearest scale degree below it, which is
+   what a musician reads: the chord on the flattened sixth of C is ♭VI, not
+   "the chord on G♯". */
+function degreeOf(semitones, degrees) {
+  const exact = degrees.indexOf(semitones);
+  if (exact !== -1) return { degree: exact, accidental: '' };
+
+  const below = degrees.reduce((best, step, i) => (step < semitones && step > degrees[best] ? i : best), 0);
+  const above = (below + 1) % 7;
+  // Closer to the degree above means it is that degree flattened.
+  if (degrees[above] - semitones === 1 || (above === 0 && semitones === 11)) {
+    return { degree: above, accidental: '♭' };
+  }
+  return { degree: below, accidental: '♯' };
+}
+
+function romanNumeral(chord, key) {
+  if (!chord || !key) return null;
+
+  const degrees = key.mode === 'minor' ? MINOR_DEGREES : MAJOR_DEGREES;
+  const semitones = (chord.root - key.tonic + 12) % 12;
+  const { degree, accidental } = degreeOf(semitones, degrees);
+
+  const minor = MINOR_QUALITIES.has(chord.quality.suffix);
+  let numeral = minor ? NUMERALS[degree].toLowerCase() : NUMERALS[degree];
+
+  if (chord.quality.suffix === 'dim') numeral += '°';
+  else if (chord.quality.suffix === 'dim7') numeral += '°7';
+  else if (chord.quality.suffix === 'm7b5') numeral += 'ø7';
+  else if (chord.quality.suffix === 'aug') numeral += '+';
+
+  const tones = chord.quality.intervals.map((i) => (chord.root + i) % 12);
+  const position = chord.bass === null ? 0 : tones.indexOf(chord.bass);
+  const figures = chord.quality.intervals.length >= 4 ? SEVENTH_FIGURES : TRIAD_FIGURES;
+  let figure = figures[Math.max(0, position)] || '';
+
+  // A seventh already says "7" in its root position figure, so a quality
+  // that has written its own symbol must not say it twice.
+  if (/[°ø]7$/.test(numeral) && figure === '7') figure = '';
+  if (chord.quality.suffix === 'sus4') figure = figure ? `${figure}sus4` : 'sus4';
+  if (chord.quality.suffix === 'sus2') figure = figure ? `${figure}sus2` : 'sus2';
+
+  return accidental + numeral + figure;
+}
+
+/* A dominant seventh on a root that is not in the key is nearly always a
+   secondary dominant — the chord that tonicises another degree — and reading
+   it as "the ♭III7" instead of "V7/vi" hides the only thing about it worth
+   knowing. Only offered for chords that genuinely resolve: the degree a
+   fourth above has to be in the key. */
+function secondaryFunction(chord, key, next) {
+  if (chord.quality.suffix !== '7' && chord.quality.suffix !== '') return null;
+  const degrees = key.mode === 'minor' ? MINOR_DEGREES : MAJOR_DEGREES;
+  const semitones = (chord.root - key.tonic + 12) % 12;
+  if (degrees.includes(semitones)) return null;
+
+  const target = (semitones + 5) % 12;
+  if (!degrees.includes(target)) return null;
+  // Only when the chord it points at is the one that actually follows.
+  if (next && (next.root - key.tonic + 12) % 12 !== target) return null;
+
+  const targetDegree = degrees.indexOf(target);
+  const targetMinor = key.mode === 'minor'
+    ? [0, 3, 4].includes(targetDegree)
+    : [1, 2, 5].includes(targetDegree);
+  const targetNumeral = targetMinor ? NUMERALS[targetDegree].toLowerCase() : NUMERALS[targetDegree];
+  return `${chord.quality.suffix === '7' ? 'V7' : 'V'}/${targetNumeral}`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   THE CHORD TRACK
+   Chords laid on the same grid the notes are, so the two can
+   be read against each other on one page.
+══════════════════════════════════════════════════════════ */
+
+/* How much better a different chord has to fit before the reading is allowed
+   to change. Chords are held: a guitarist strums G for a bar, and the beats
+   in the middle of it — where the strings are ringing and nothing has been
+   re-struck — are the weakest evidence in the bar. Without hysteresis those
+   beats flicker between G and Em and G/B, and a chart nobody can read is
+   worse than a slightly late chord change. */
+const CHORD_STICKINESS = 0.05;
+
+// Readings this far below the best one in the take are silence, a damped
+// string, or a hand moving between shapes.
+const CHORD_SILENCE_RATIO = 0.22;
+
+/* Folds anything too short to be a chord back into what came before it.
+
+   A beat is the shortest thing worth calling a chord change. Between one
+   shape and the next a guitarist's hand passes over strings still ringing
+   from the last chord and not yet fretted for the next, and for a reading or
+   two what is sounding really is some third chord. Writing it down is not
+   more accurate, it is less: nobody played a Bm there, and a chart carrying a
+   chord no hand ever made is harder to play from than one that changes a
+   sixteenth late. */
+function holdShortChords(track) {
+  const held = [];
+  for (const entry of track) {
+    const last = held[held.length - 1];
+    if (last && sameChord(last.chord, entry.chord)) { last.units += entry.units; continue; }
+    if (last && entry.units < UNITS_PER_BEAT && last.units >= UNITS_PER_BEAT) {
+      last.units += entry.units;
+      continue;
+    }
+    held.push({ ...entry });
+  }
+
+  // A stub at the head of the take has nothing before it to fold into, so it
+  // gives its time to what follows instead.
+  if (held.length > 1 && held[0].units < UNITS_PER_BEAT) {
+    held[1].units += held[0].units;
+    held.shift();
+  }
+  return held;
+}
+
+const sameChord = (a, b) => {
+  if (!a || !b) return a === b;
+  return a.root === b.root && a.quality.suffix === b.quality.suffix && a.bass === b.bass;
+};
+
+/* Reads the harmony beat by beat and returns it in the same units the score
+   is written in, so a chord and the notes under it line up by construction
+   rather than by a second alignment pass that could disagree. */
+function chordTrack(signal, bpm) {
+  const perSecond = (bpm / 60) * CHROMA_PER_BEAT;
+  const { spectra, hop, rate } = semitoneSpectra(signal, perSecond);
+  if (!spectra.length) return [];
+
+  const unitsPerReading = UNITS_PER_BEAT / CHROMA_PER_BEAT;
+  const readings = spectra.map((row) => {
+    const cleaned = subtractHarmonics(row);
+    const chroma = foldChroma(cleaned);
+
+    let energy = 0;
+    for (const v of row) energy += v;
+    return { chroma, bass: lowestNote(cleaned), energy };
+  });
+
+  const loudest = readings.reduce((peak, r) => Math.max(peak, r.energy), 0);
+  const floor = loudest * CHORD_SILENCE_RATIO;
+
+  // One reading at a time, but each one allowed to keep the chord before it
+  // unless the alternative is clearly better.
+  const track = [];
+  let held = null;
+  for (const reading of readings) {
+    let chord = reading.energy < floor ? null : bestChord(reading.chroma, reading.bass);
+    if (chord && held && !sameChord(chord, held)) {
+      const keeping = scoreChord(reading.chroma, reading.bass, held.root, held.quality);
+      if (keeping + CHORD_STICKINESS >= chord.score) chord = { ...held };
+    }
+    held = chord;
+
+    const last = track[track.length - 1];
+    if (last && sameChord(last.chord, chord)) last.units += unitsPerReading;
+    else track.push({ chord, units: unitsPerReading });
+  }
+
+  return track;
+}
+
+/* Which of the fifteen written keys a detected tonic and mode correspond to.
+
+   Two of them always match — F♯ major and G♭ major are the same six sounds —
+   so the one with the smaller signature wins. Nobody reading a chart wants
+   six flats where six sharps would do, and neither spelling is more correct
+   than the other. */
+function keyForTonic(tonic, mode) {
+  let best = null;
+  for (const key of KEYS) {
+    if (key.mode !== mode) continue;
+    const spec = key.id.endsWith('m') ? key.id.slice(0, -1) : key.id;
+    const spelled = parseSpelling(spec);
+    const pitchClass = (LETTER_SEMITONES[spelled.step] + spelled.alter + 12) % 12;
+    if (pitchClass !== tonic) continue;
+    if (!best || Math.abs(key.fifths) < Math.abs(best.fifths)) best = key;
+  }
+  return best;
+}
+
+// The chord's name, spelled the way the key spells it — so a chart in E♭
+// says A♭ and one in E says G♯, which is what the rest of the page does.
+function chordLabel(chord, key) {
+  const spellings = keySpellings(key ? key.fifths : 0);
+  const name = (pc) => {
+    const { step, alter } = spellings[pc];
+    return `${step}${ACCIDENTAL_GLYPHS[alter]}`;
+  };
+  const slash = chord.bass === null ? '' : `/${name(chord.bass)}`;
+  return `${name(chord.root)}${chord.quality.suffix}${slash}`;
+}
+
+/* The whole harmonic reading of a take: the chords, the key they are in, and
+   what each one is doing in it.
+
+   `keyId` overrides the detected key when the player has told us what they
+   played in. That is worth more than anything inferable from a few bars of
+   audio — four bars of a I-IV-V in C and the same four bars heard as a
+   vi-ii-III in E minor are the same twelve pitch classes, and only the
+   player knows which one it was. */
+function analyzeHarmony(samples, sampleRate, bpm, keyId = null) {
+  const signal = prepareSignal(samples, sampleRate);
+  const track = holdShortChords(chordTrack(signal, bpm));
+  if (!track.length) return { key: null, chords: [] };
+
+  let key = keyId && KEY_BY_ID[keyId] ? KEY_BY_ID[keyId] : null;
+  if (!key) {
+    const found = detectKey(track);
+    key = found && keyForTonic(found.tonic, found.mode);
+  }
+  if (key) {
+    const spec = key.id.endsWith('m') ? key.id.slice(0, -1) : key.id;
+    const spelled = parseSpelling(spec);
+    key = { ...key, tonic: (LETTER_SEMITONES[spelled.step] + spelled.alter + 12) % 12 };
+  }
+
+  // What each chord resolves to, for the secondary-dominant test — the next
+  // chord that is actually different, not the next reading.
+  const following = new Array(track.length).fill(null);
+  for (let i = track.length - 2; i >= 0; i--) {
+    following[i] = track[i + 1].chord || following[i + 1];
+  }
+
+  const chords = track.map((entry, i) => {
+    if (!entry.chord) return { chord: null, units: entry.units, label: null, roman: null };
+    const secondary = key ? secondaryFunction(entry.chord, key, following[i]) : null;
+    return {
+      chord: entry.chord,
+      units: entry.units,
+      label: chordLabel(entry.chord, key),
+      roman: key ? secondary || romanNumeral(entry.chord, key) : null,
+    };
+  });
+
+  return { key, chords };
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1042,11 +1955,15 @@ function analyzeRecording(samples, sampleRate, bpm) {
   // the level readings and the onsets all see the same signal.
   const signal = prepareSignal(samples, sampleRate);
 
-  const frames = measureFrames(signal, 1 / frameDur);
+  // Onsets first, because pitch measurement needs them: they are the
+  // boundaries the analysis window is not allowed to cross.
+  const onsets = detectOnsets(signal);
+
+  const frames = measureFrames(signal, 1 / frameDur, onsets);
   smoothPitch(frames);
   fillDropouts(frames, Math.max(1, Math.round(MAX_DROPOUT_SECONDS / frameDur)));
 
-  const tracked = mergeUnarticulatedRuns(trackNotes(frames, frameDur, detectOnsets(signal)));
+  const tracked = mergeUnarticulatedRuns(trackNotes(frames, frameDur, onsets));
   return consolidateFragments(tracked);
 }
 
@@ -1908,6 +2825,75 @@ function xmlEscape(s) {
     .replace(/"/g, '&quot;');
 }
 
+/* MusicXML's own names for the chord qualities this detector writes. The
+   vocabulary is fixed by the standard, so a quality with no <kind> of its
+   own — there are none here — would have to go in as "other". */
+const XML_KINDS = {
+  '':      'major',
+  m:       'minor',
+  7:       'dominant',
+  m7:      'minor-seventh',
+  maj7:    'major-seventh',
+  sus4:    'suspended-fourth',
+  sus2:    'suspended-second',
+  6:       'major-sixth',
+  m6:      'minor-sixth',
+  dim:     'diminished',
+  m7b5:    'half-diminished',
+  dim7:    'diminished-seventh',
+  aug:     'augmented',
+};
+
+// How many times the harmony changes — which is what a musician means by
+// "how many chords", not how many readings agreed.
+function chordCount(harmony) {
+  let changes = 0;
+  let previous = null;
+  for (const entry of harmony.chords) {
+    if (entry.chord && !sameChord(entry.chord, previous)) changes++;
+    previous = entry.chord;
+  }
+  return changes;
+}
+
+/* The chords that start inside one measure, with their offsets in divisions.
+
+   A chord that began in an earlier bar and is still sounding is not repeated:
+   a chart writes a symbol where the harmony changes and nowhere else, and
+   restating it every bar is how a lead sheet becomes unreadable. */
+function harmonyInMeasure(harmony, measureIndex) {
+  if (!harmony?.chords?.length) return [];
+
+  const from = measureIndex * UNITS_PER_MEASURE;
+  const to = from + UNITS_PER_MEASURE;
+  const spellings = keySpellings(harmony.key ? harmony.key.fifths : 0);
+  const found = [];
+
+  let at = 0;
+  let previous = null;
+  for (const entry of harmony.chords) {
+    const startUnits = at;
+    at += entry.units;
+    if (!entry.chord) { previous = null; continue; }
+    if (sameChord(entry.chord, previous)) continue;
+    previous = entry.chord;
+    if (startUnits < from || startUnits >= to) continue;
+
+    const root = spellings[entry.chord.root];
+    const bass = entry.chord.bass === null ? null : spellings[entry.chord.bass];
+    found.push({
+      step: root.step,
+      alter: root.alter,
+      bassStep: bass ? bass.step : null,
+      bassAlter: bass ? bass.alter : 0,
+      kind: XML_KINDS[entry.chord.quality.suffix] || 'other',
+      text: entry.label,
+      offset: startUnits - from,
+    });
+  }
+  return found;
+}
+
 function buildMusicXML(runs, bpm, options = {}) {
   const model = modelFromRuns(runs, options.clefMode, options.notation);
   if (!model) return null;
@@ -1972,6 +2958,24 @@ function buildMusicXML(runs, bpm, options = {}) {
     // A♭ is written without an accidental and an A♮ needs one. This mirrors
     // what VexFlow draws on screen, keeping file and score identical.
     const measureAccidentals = new Map();
+
+    /* Chords go in as <harmony>, which is where a notation program looks for
+       them — written above the staff on import, transposed with the part,
+       and editable as chord symbols rather than as text somebody typed over
+       the score. An <offset> places the change inside the bar; without one
+       every chord in the bar would land on its first beat. */
+    for (const chord of harmonyInMeasure(options.harmony, m)) {
+      out.push('      <harmony>');
+      out.push(`        <root><root-step>${chord.step}</root-step>${
+        chord.alter ? `<root-alter>${chord.alter}</root-alter>` : ''}</root>`);
+      out.push(`        <kind text="${xmlEscape(chord.text)}">${chord.kind}</kind>`);
+      if (chord.bassStep) {
+        out.push(`        <bass><bass-step>${chord.bassStep}</bass-step>${
+          chord.bassAlter ? `<bass-alter>${chord.bassAlter}</bass-alter>` : ''}</bass>`);
+      }
+      if (chord.offset) out.push(`        <offset>${chord.offset}</offset>`);
+      out.push('      </harmony>');
+    }
 
     for (const i of groups[m]) {
       const u = units[i];
@@ -2163,6 +3167,9 @@ const Library = {
       key: record.key || DEFAULT_KEY_ID,
       part: record.part || DEFAULT_PART_ID,
       runs: record.runs.map(({ note, units }) => ({ note, units })),
+      // Kept as read, not re-derived: the audio is gone, so a chart that was
+      // not saved with the score could never be recovered.
+      harmony: record.harmony || null,
     };
 
     const rest = Library.all().filter((entry) => entry.id !== stored.id);
@@ -2244,7 +3251,14 @@ function renderScore(runs, container, options = {}) {
   const staveHeight = 108;
   const rowCount = Math.ceil(numMeasures / measuresPerRow);
   const totalWidth = measuresPerRow * measureWidth + 24;
-  const totalHeight = rowCount * (staveHeight + 26) + 30;
+
+  // A chart needs room the staff alone does not: chord names ride above the
+  // top line and the numerals sit under the bottom one, which is where a
+  // musician expects to find each of them.
+  const harmony = options.harmony?.chords?.length ? options.harmony : null;
+  const topPad = harmony ? 34 : 14;
+  const rowGap = harmony ? 52 : 26;
+  const totalHeight = rowCount * (staveHeight + rowGap) + topPad + 16;
 
   const renderer = new VF.Renderer(container, VF.Renderer.Backends.SVG);
   renderer.resize(totalWidth, totalHeight);
@@ -2259,7 +3273,7 @@ function renderScore(runs, container, options = {}) {
     const row = Math.floor(m / measuresPerRow);
     const col = m % measuresPerRow;
     const x = 12 + col * measureWidth;
-    const y = 14 + row * (staveHeight + 26);
+    const y = topPad + row * (staveHeight + rowGap);
 
     const stave = new VF.Stave(x, y, measureWidth);
     if (col === 0) {
@@ -2353,6 +3367,8 @@ function renderScore(runs, container, options = {}) {
     }
   });
 
+  if (harmony) layerHarmony(container, measures, harmony, measureWidth);
+
   if (options.onSelect || options.selected != null) {
     layerSelection(container, { units, measures, measureWidth }, options);
   }
@@ -2382,6 +3398,55 @@ function renderScore(runs, container, options = {}) {
    marks have to sit either side of everything it drew.
 ══════════════════════════════════════════════════════════ */
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/* Chord names over the staff and Roman numerals under it.
+
+   Drawn onto the finished SVG rather than handed to the engraver as text
+   notes, because a chord is not an event in the voice: it starts where it
+   starts, holds until the next one, and must not be given a duration that
+   the bar then has to account for. Positioning it by its place in the bar
+   keeps it over the beat it was played on whatever the notes underneath are
+   doing.
+
+   The numerals go below because that is where analysis goes, and the chord
+   names above because that is where a player looks for them. */
+function layerHarmony(container, measures, harmony, measureWidth) {
+  const svg = container.querySelector('svg');
+  if (!svg) return;
+
+  const layer = document.createElementNS(SVG_NS, 'g');
+  layer.setAttribute('class', 'score__harmony');
+
+  const write = (text, x, y, className) => {
+    const node = document.createElementNS(SVG_NS, 'text');
+    node.setAttribute('x', x);
+    node.setAttribute('y', y);
+    node.setAttribute('class', className);
+    node.textContent = text;
+    layer.appendChild(node);
+  };
+
+  let at = 0;
+  for (const entry of harmony.chords) {
+    const startUnits = at;
+    at += entry.units;
+    if (!entry.label) continue;
+
+    const measure = measures[Math.floor(startUnits / UNITS_PER_MEASURE)];
+    if (!measure) continue;
+
+    // Across the note area of the bar, not the bar: the clef and signature
+    // at the head of a system take width that no beat is played in.
+    const noteStart = measure.stave.getNoteStartX();
+    const room = measure.stave.getX() + measureWidth - noteStart - 12;
+    const x = noteStart + ((startUnits % UNITS_PER_MEASURE) / UNITS_PER_MEASURE) * room;
+
+    write(entry.label, x, measure.stave.getYForLine(0) - 16, 'chordname');
+    if (entry.roman) write(entry.roman, x, measure.stave.getYForLine(4) + 30, 'numeral');
+  }
+
+  svg.appendChild(layer);
+}
 
 function layerSelection(container, { units, measures, measureWidth }, options) {
   const svg = container.querySelector('svg');
@@ -3100,6 +4165,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const scoreTempo  = $('#scoreTempo');
   const metronomeToggle = $('#metronomeToggle');
   const metronomeState  = $('#metronomeState');
+  const chordsToggle = $('#chordsToggle');
+  const chordsState  = $('#chordsState');
   const keySelect   = $('#keySelect');
   const instrumentSelect = $('#instrumentSelect');
   const transposeHint = $('#transposeHint');
@@ -3388,9 +4455,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      // The key the player set spells the score, so it decides the numerals
+      // too — a chart and the staff under it disagreeing about what key the
+      // music is in would be worse than no chart.
+      const harmony = chordsToggle.checked
+        ? analyzeHarmony(captured.samples, captured.sampleRate, bpm, keySelect.value)
+        : null;
+
       loadScore({
         runs,
         bpm,
+        harmony,
         seconds: captured.samples.length / captured.sampleRate,
         title: defaultScoreTitle(),
       });
@@ -3438,6 +4513,7 @@ document.addEventListener('DOMContentLoaded', () => {
       info = renderScore(score.runs, scoreContainer, {
         clefMode: clefSelect.value,
         notation: scoreNotation,
+        harmony: score.harmony,
         selected,
         onSelect: select,
       });
@@ -3453,6 +4529,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `${info.noteCount} events`,
       ];
       if (info.hasTriplets) parts.push('triplets');
+      if (score.harmony?.key) parts.push(`${chordCount(score.harmony)} chords`);
       parts.push(info.key, info.clef, `${score.bpm} bpm`);
       // Named only when it is doing something, since for most of the list it
       // is not: what a trumpet part needs saying about it is that it is one.
@@ -3661,6 +4738,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const xml = buildMusicXML(source.runs, source.bpm, {
         title: source.title || `humusic transcription — ${source.bpm} bpm`,
         clefMode: source.clefMode || clefSelect.value,
+        harmony: source.harmony,
         notation,
       });
       if (!xml) throw new Error('empty score');
@@ -3688,6 +4766,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const stored = Library.put({
         id: score.id,
         title: score.title || defaultScoreTitle(),
+        harmony: score.harmony,
         createdAt: score.createdAt,
         bpm: score.bpm,
         clefMode: clefSelect.value,
@@ -3833,6 +4912,7 @@ document.addEventListener('DOMContentLoaded', () => {
     syncNotation();
     loadScore({
       runs: record.runs.map(({ note, units }) => ({ note, units })),
+      harmony: record.harmony || null,
       bpm: clampBpm(record.bpm),
       seconds: null,
       id: record.id,
@@ -3889,6 +4969,12 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   metronomeToggle.addEventListener('change', syncMetronomeLabel);
   syncMetronomeLabel();
+
+  function syncChordsLabel() {
+    chordsState.textContent = chordsToggle.checked ? 'On' : 'Off';
+  }
+  chordsToggle.addEventListener('change', syncChordsLabel);
+  syncChordsLabel();
 
   let resizeTimer = null;
   window.addEventListener('resize', () => {

@@ -8,6 +8,7 @@
   <meta property="og:title" content="humusic — Any sound, set in type." />
   <meta property="og:description" content="Record, transcribe, engrave, export. Professional notation from any recording." />
   <meta property="og:type" content="website" />
+  <link rel="icon" type="image/svg+xml" href="images/humusic-mark.svg" />
   <link rel="icon" type="image/png" href="images/humusic-icon.png" />
   <link rel="apple-touch-icon" href="images/humusic-icon.png" />
   <title>humusic — Any sound, set in type.</title>
@@ -24,7 +25,7 @@
   <!-- ═══ MASTHEAD ═══ -->
   <header class="masthead" id="masthead">
     <a class="masthead__brand" href="#top">
-      <img class="appmark" src="images/humusic-icon.png" alt="" width="26" height="26" />
+      <img class="appmark" src="images/humusic-mark.svg" alt="" width="26" height="26" />
       <span class="wordmark">hu<em>music</em></span>
     </a>
     <nav class="masthead__nav" aria-label="Sections">
@@ -90,6 +91,7 @@
           <div class="row"><dt class="label">Reference</dt><dd class="row__v">A4 = 440 Hz</dd></div>
           <div class="row"><dt class="label">Grid</dt><dd class="row__v">1/16 and triplets</dd></div>
           <div class="row"><dt class="label">Metre</dt><dd class="row__v">4/4</dd></div>
+          <div class="row"><dt class="label">Harmony</dt><dd class="row__v">Chord names · Roman numerals</dd></div>
           <div class="row"><dt class="label">Clef</dt><dd class="row__v">Treble, bass or automatic</dd></div>
           <div class="row"><dt class="label">Metronome</dt><dd class="row__v">4/4 click while recording</dd></div>
           <div class="row"><dt class="label">Playback</dt><dd class="row__v">Piano · guitar · sax · synth</dd></div>
@@ -138,7 +140,9 @@
             <h3>Detection</h3>
             <p>The YIN autocorrelation estimator resolves fundamental frequency and
               rejects the octave errors that spectral peak-picking is prone to.
-              Deviation is reported live, in cents, while you play.</p>
+              Each analysis window is held inside the note it is measuring, so a
+              window straddling a note change cannot report the period of the
+              mixture. Deviation is reported live, in cents, while you play.</p>
           </div>
         </li>
         <li class="entry">
@@ -185,6 +189,17 @@
         </li>
         <li class="entry">
           <span class="entry__num mono">07</span>
+          <div class="entry__body">
+            <h3>Harmony</h3>
+            <p>Guitar chords are read as chords rather than as notes — G, Am7, D/F♯ —
+              from the pitch classes sounding rather than from any one of them, and
+              set above the staff. Under it goes what each chord is doing in the key
+              you set or the one it hears: I, vi, V6, V7/vi. Both travel in the
+              MusicXML.</p>
+          </div>
+        </li>
+        <li class="entry">
+          <span class="entry__num mono">08</span>
           <div class="entry__body">
             <h3>Locality</h3>
             <p>Every stage runs on your own device. No recording is uploaded, and no

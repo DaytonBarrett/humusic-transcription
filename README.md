@@ -33,7 +33,9 @@ The process:
 | `base.css` | Shared design system: palette, type, rules, glass |
 | `vendor/` | VexFlow engraving engine and self-hosted fonts |
 | `C++/main.cpp` | The original native FFT transcriber |
+| `eval/` | Accuracy harness — synthetic takes, known answers, a score |
 | `scripts/build-www.py` | Builds `www/`, the bundle shipped inside the iOS app |
+| `scripts/build-icons.py` | Renders every app icon from `images/humusic-mark.svg` |
 
 ## The web transcriber
 
@@ -47,6 +49,22 @@ the **YIN autocorrelation estimator**, which resolves the fundamental directly
 and is far less prone to the octave errors that spectral peak-picking produces.
 Note naming still follows the same equal-temperament formula as `main.cpp`
 (`69 + 12·log₂(f/440)`, A4 = 440 Hz), so both transcribers agree on every note.
+
+Each pitch window is held **inside the note it is measuring**. A window
+centred near a note change contains both notes at once, and YIN finds the
+period of the mixture — which is neither of them, and is usually far too low,
+because two notes together repeat only over their common multiple. That was
+the single largest source of error in the detector: a spurious very low note
+at almost every boundary, and the real note written late. Onsets are found
+first, and the window is then pinned inside them.
+
+Onsets come from two detectors that fail differently. The first reads level,
+and finds a struck or tongued attack precisely. The second is **SuperFlux**
+(Böck & Widmer) — spectral flux over a log-frequency filterbank, with a
+maximum filter across frequency to keep vibrato from reading as a stream of
+attacks. It catches the two kinds of note start the first one structurally
+cannot see: a note re-struck while the one before it is still ringing, and a
+slurred change where the pitch moves and the level does not.
 
 Rhythm is quantized against a grid of **twelfths of a beat** derived from the
 tempo, then consolidated into idiomatic durations — dotted values, ties across
@@ -68,6 +86,35 @@ vibrato on a note sung slightly sharp — would otherwise be written as a stream
 of alternating sixteenths. The measurements are median-filtered, brief
 dropouts inside a sustain are bridged, and a note ends only when the pitch
 genuinely leaves where it has been sitting or a fresh attack arrives.
+
+### Chords
+
+Turn **Chords** on and the harmony is read alongside the line: chord names
+above the staff, Roman numerals below it, and `<harmony>` elements in the
+exported MusicXML so the chart survives into Sibelius or MuseScore rather
+than arriving as text somebody typed over the score.
+
+Chords are read from **chroma** — how much of each of the twelve pitch classes
+is sounding, octave discarded — because that is a question a chord can answer
+and "what one note is this" is not. Two guitarists voicing G major at opposite
+ends of the neck produce quite different spectra and very nearly the same
+chroma, which is the point: the voicing changes and the harmony does not.
+
+Two things make it work on a guitar specifically. Each note's harmonic series
+is subtracted from the bins above it before those bins are read — the fifth
+partial of a low E is a G♯, loud enough to read as a real note, which is how
+an E minor chord arrives carrying the major third it does not contain. And
+the bass note is found as the *lowest* note sounding rather than the strongest
+one low down: an open G is voiced G-B-D-G-B-G, and "strongest pitch class
+below middle C" answers B, which would write every plain chord as a first
+inversion.
+
+Roman numerals need a key, so the key is either the one you set — which is
+worth more than anything inferable from a few bars — or detected from the
+chords using **Albrecht & Shanahan's profiles**, compared by Euclidean
+distance. Inversions get figured bass (`V6`, `I⁶₄`), and a dominant seventh on
+a root outside the key is written as the secondary dominant it is (`V7/vi`)
+when the chord it points at is the one that actually follows.
 
 ### Playback
 
@@ -115,12 +162,38 @@ rather than a few megabytes, it survives being reopened at a different tempo,
 and it keeps the App Store privacy label honest: recording the microphone to
 disk would be the first thing to make *no data collected* untrue.
 
-**Limitations worth knowing:** the detector is monophonic, so chords will not
-transcribe correctly; everything is written in 4/4; the tempo is taken from you
+**Limitations worth knowing:** the staff detector is monophonic, so a chord
+will not transcribe as notes — turn Chords on and it is read as harmony
+instead (see below); everything is written in 4/4; the tempo is taken from you
 rather than inferred from the audio; triplet detection covers eighth-note
 triplets within a beat, not duplets, quintuplets or triplets spanning two beats;
 and the library lives in `localStorage`, so it is per-device and goes with the
 app rather than with an account.
+
+## Measuring accuracy
+
+    node eval/run.js            score, against the committed baseline
+    node eval/run.js --save     make this run the new baseline
+    node eval/run.js --wav out/ write the test clips out to listen to
+
+`eval/` loads `app.js` itself — not a copy of the algorithms, since a harness
+that scores its own reimplementation measures nothing — and runs it over
+synthetic takes whose answers are known exactly. Each clip provokes one
+specific failure: vibrato across a semitone boundary, a slurred step with no
+attack to find, a bass line where the analysis window holds fewest periods, a
+tone whose fundamental is missing altogether. An aggregate score over "some
+music" tells you the detector got worse without telling you where.
+
+Notes are scored on `mir_eval`'s note-transcription metrics — onset within
+50 ms, pitch within 50 cents, and for the stricter figure an offset within the
+greater of 50 ms and a fifth of the note — so the numbers can be compared with
+published ones. Chords are scored per change against the progression that was
+strummed, on voicings a hand actually makes rather than triads spelled upward
+from the root.
+
+The noise in every clip is seeded. Two runs of the same engine that differed
+by more than most real changes would make the harness useless for the one
+question it exists to answer.
 
 ## iOS
 

@@ -34,13 +34,14 @@ FILES = [
     ("app.css", "app.css"),
     ("app.js", "app.js"),
     ("vendor/vexflow.js", "vendor/vexflow.js"),
+    ("images/humusic-mark.svg", "images/humusic-mark.svg"),
     ("images/humusic-icon.png", "images/humusic-icon.png"),
 ]
 
 FONT_DIR = ("vendor/fonts", "vendor/fonts")
 
 REMOTE = re.compile(rb"""(?:https?:)?//([\w-]+(?:\.[\w-]+)+)""")
-SCANNED_SUFFIXES = {".html", ".css", ".js"}
+SCANNED_SUFFIXES = {".html", ".css", ".js", ".svg"}
 
 # vexflow.js embeds its homepage and a sourceMappingURL in comments; neither
 # is fetched at runtime.

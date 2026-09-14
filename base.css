@@ -65,7 +65,14 @@
      #061225 is the icon's glyph navy; #3478F6 its field blue. */
   --ink:       #061225;
   --ink-2:     #38455A;
-  --ink-3:     #6E7A8B;
+  /* Darkened from #6E7A8B, which measured 3.6:1 on paper and was being used
+     for real body copy in the console — the note under .label below used to
+     record that as a reason not to use it, while app.css used it a dozen
+     times. It now reaches 4.6:1, so the rule and the practice agree. */
+  --ink-3:     #5F6978;
+  /* 1.9:1 on paper. Rules, fills and disabled chrome only — never text on
+     a light ground, where it is barely visible at all. On the dark bands it
+     is the light side of the pair and perfectly legible. */
   --ink-4:     #A3ABB6;
 
   --paper:     #EDE8DE;
@@ -76,6 +83,11 @@
   --blue:      #3478F6;
   --blue-lift: #5A98FF;
   --blue-deep: #1B4CB3;
+  /* The field blue is the brand, and white on it is 4.1:1 — under AA for
+     anything but large text, which the buttons wearing it are not. This is
+     the same blue taken down far enough to carry white type at 11px, and is
+     for that job only: backgrounds, rules and focus rings keep --blue. */
+  --blue-cta:  #2E6AD8;
 
   --vermillion: #DA3B16;
 
@@ -172,7 +184,10 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html {
-  font-size: 16px;
+  /* Percentage, not pixels. A hard 16px here silently overrides whatever the
+     reader has set their browser's base size to, which is the one control a
+     person with low vision is most likely to have already found. */
+  font-size: 100%;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -231,10 +246,10 @@ input, select, textarea { font: inherit; color: inherit; }
   font-weight: var(--w-mono);
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  /* Already at the mono's heaviest real cut, so the readability that a
-     weight bump buys elsewhere has to come from contrast here instead:
-     --ink-3 on paper is 3.6:1, which fails AA for text this small; the
-     same grey on the dark bands already gets overridden to --ink-4. */
+  /* Already at the mono's heaviest real cut, so the readability a weight
+     bump buys elsewhere has to come from contrast here instead. --ink-2 is
+     7.9:1, with room to spare at ten pixels; on the dark bands this is
+     overridden to --ink-4, which is the light end of the same pairing. */
   color: var(--ink-2);
 }
 
@@ -343,12 +358,12 @@ input, select, textarea { font: inherit; color: inherit; }
 .btn:disabled:hover { background: transparent; color: var(--ink); }
 
 .btn--primary {
-  background: var(--blue);
+  background: var(--blue-cta);
   border-color: var(--blue-deep);
   color: #fff;
 }
 .btn--primary:hover { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-.btn--primary:disabled:hover { background: var(--blue); border-color: var(--blue-deep); color: #fff; }
+.btn--primary:disabled:hover { background: var(--blue-cta); border-color: var(--blue-deep); color: #fff; }
 
 /* Same rule, shorter: for buttons riding inside another band of chrome —
    the masthead, a library row — where a 40px control would set the height

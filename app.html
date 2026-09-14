@@ -8,6 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="humusic" />
+  <link rel="icon" type="image/svg+xml" href="images/humusic-mark.svg" />
   <link rel="icon" type="image/png" href="images/humusic-icon.png" />
   <link rel="apple-touch-icon" href="images/humusic-icon.png" />
   <title>humusic — Transcriber</title>
@@ -24,7 +25,7 @@
   <header class="masthead">
     <a class="masthead__brand" href="index.html" data-web-only-link
        title="Back to humusic.org">
-      <img class="appmark" src="images/humusic-icon.png" alt="" width="26" height="26" />
+      <img class="appmark" src="images/humusic-mark.svg" alt="" width="26" height="26" />
       <span class="wordmark">hu<em>music</em></span>
       <span class="masthead__rule" aria-hidden="true"></span>
       <span class="label">Transcriber</span>
@@ -106,6 +107,16 @@
             </dd>
           </div>
           <div class="row">
+            <dt class="label">Chords</dt>
+            <dd class="row__v">
+              <label class="toggle">
+                <input type="checkbox" id="chordsToggle" />
+                <span class="toggle__track" aria-hidden="true"><span class="toggle__knob"></span></span>
+                <span class="toggle__text mono" id="chordsState">Off</span>
+              </label>
+            </dd>
+          </div>
+          <div class="row">
             <dt class="label">Key</dt>
             <dd class="row__v">
               <select class="rowselect" id="keySelect" aria-label="Key of the music"></select>
@@ -146,7 +157,9 @@
         triplets alike, each beat read as straight or swung from how you
         played it. The key spells the notes and sets the signature; the
         instrument writes the part at the interval it reads, so a line hummed
-        in concert C comes out in D for trumpet. The score is set on the clef
+        in concert C comes out in D for trumpet. Turn Chords on for guitar and
+        the harmony is read as well as the line — chord names over the staff,
+        Roman numerals under it, in the key you set or the one it hears. The score is set on the clef
         you pick, or Auto to read it from your range. Use headphones with the
         metronome on, or the click is recorded along with the line.
       </p>

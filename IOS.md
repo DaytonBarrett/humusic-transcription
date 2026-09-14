@@ -57,7 +57,7 @@ and this one should say the recording is processed on-device, because it is.
 ## 4. App icon
 
 `ios-assets/AppIcon.appiconset/` holds a store-ready 1024×1024 icon generated
-from `images/humusic-icon.png`. It is **square and fully opaque** — the App Store
+from `images/humusic-mark.svg` by `scripts/build-icons.py`. It is **square and fully opaque** — the App Store
 rejects icons with an alpha channel or with rounded corners baked in, since iOS
 applies its own mask.
 

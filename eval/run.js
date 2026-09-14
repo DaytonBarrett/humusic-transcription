@@ -141,11 +141,21 @@ for (const progression of PROGRESSIONS) {
   const { key, chords } = engine.analyzeHarmony(samples, sampleRate, bpm, progression.key);
   const played = chordsPlayed(chords, beatsEach * engine.UNITS_PER_QUARTER);
 
+  // Two of the same chord in a row are one chord held, not two changes, so
+  // the answer is compared against the progression with repeats collapsed —
+  // otherwise a correct reading is marked down for not restating a chord
+  // that never changed.
+  const wanted = [];
+  progression.chords.forEach((name, i) => {
+    if (wanted.length && wanted[wanted.length - 1].label === name) return;
+    wanted.push({ label: name, roman: progression.roman[i] });
+  });
+
   let right = 0;
-  progression.chords.forEach((want, i) => {
+  wanted.forEach((want, i) => {
     chordTotal++;
-    if (played[i] && played[i].label === spell(want)) { chordHits++; right++; }
-    if (played[i] && played[i].roman === progression.roman[i]) romanHits++;
+    if (played[i] && played[i].label === spell(want.label)) { chordHits++; right++; }
+    if (played[i] && played[i].roman === want.roman) romanHits++;
   });
   // For a progression with no key given the detector has to find it; where
   // one is given it has to be honoured rather than overridden.
@@ -154,7 +164,7 @@ for (const progression of PROGRESSIONS) {
   console.log(
     `  ${progression.name.padEnd(18)} ${String(key ? key.id : '—').padEnd(6)} ` +
     `${played.map((c) => c.label).join(' ').slice(0, 27).padEnd(27)} ` +
-    `${right}/${progression.chords.length}`
+    `${right}/${wanted.length}`
   );
 }
 

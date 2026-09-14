@@ -107,10 +107,17 @@ a.masthead__brand:focus-visible {
 /* ──────────────────────────────────────────────────────────
    GRID — deliberately unequal
    ────────────────────────────────────────────────────────── */
+/* The console takes the same ground the site's bands do, and for the same
+   reason: the blue field is fixed behind the whole page and full-bleed to
+   one edge, so the right of the score column — the export and clear buttons,
+   and the paragraph under them — was set over it at 2.4:1. A control whose
+   label cannot be read is worse here than on the site, because this is the
+   surface the work is actually done on. */
 .console__grid {
   position: relative;
   z-index: 1;
   flex: 1;
+  background: var(--glass-strong);
   display: grid;
   grid-template-columns: 344px minmax(0, 1fr);
   align-items: start;
@@ -149,10 +156,13 @@ a.masthead__brand:focus-visible {
   text-align: right;
 }
 
+/* The one long paragraph in the console. 13px rather than 12, and held to a
+   narrow measure, because it is read once carefully and then never again —
+   which is exactly the text that must not be hard to read the first time. */
 .col__note {
   margin-top: var(--s4);
-  font-size: var(--fs-12);
-  line-height: 1.6;
+  font-size: var(--fs-13);
+  line-height: 1.65;
   color: var(--ink-3);
   max-width: 34ch;
 }
@@ -591,7 +601,7 @@ a.masthead__brand:focus-visible {
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
-.stepper.is-rest .stepper__value { color: var(--ink-4); }
+.stepper.is-rest .stepper__value { color: var(--ink-3); }
 
 /* Two-state control on the same rule as the stepper */
 .segmented { display: flex; border: var(--rule-hair); }
@@ -644,7 +654,7 @@ a.masthead__brand:focus-visible {
 /* Not merely dim — a length that will not fit the beat is struck through,
    because "unavailable here" is a different fact from "not selected". */
 .value:disabled {
-  color: var(--ink-4);
+  color: var(--ink-3);
   cursor: not-allowed;
   text-decoration: line-through;
   text-decoration-thickness: 1px;
@@ -654,8 +664,8 @@ a.masthead__brand:focus-visible {
   margin-top: var(--s4);
   padding-top: var(--s3);
   border-top: var(--rule-hair);
-  font-size: var(--fs-12);
-  line-height: 1.6;
+  font-size: var(--fs-13);
+  line-height: 1.65;
   color: var(--ink-3);
   max-width: 58ch;
 }
@@ -837,7 +847,7 @@ a.masthead__brand:focus-visible {
 }
 .entry__seq {
   min-width: 2.2ch;
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-style: italic;
   font-size: var(--fs-17);
   text-align: right;
@@ -980,4 +990,27 @@ a.masthead__brand:focus-visible {
      than being the thing the ellipsis eats. */
   .entry__meta { white-space: normal; }
   .values { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+/* ──────────────────────────────────────────────────────────
+   HARMONY
+   The chart over the staff and the analysis under it.
+
+   Chord names are set in the display face because they are
+   read as names — G, Am7, D/F♯ — at a glance and from a
+   distance, the way a player reads a lead sheet. The numerals
+   are mono and smaller: they are apparatus, and they should
+   sit under the music without competing with it.
+   ────────────────────────────────────────────────────────── */
+.score__paper svg .chordname {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  fill: var(--ink);
+}
+.score__paper svg .numeral {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  fill: var(--blue-deep);
 }

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="humusic">
+  <!--
+    The humusic mark.
+
+    The same two things the old icon said — a microphone and a note, sound
+    going in and notation coming out — redrawn in the vocabulary the rest of
+    the product is built from. The gloss, the halo, the soft bevels and the
+    dashed seam across the top are gone; the field gradient and the ruled
+    manuscript behind it are the design system's own materials, so the icon
+    and the page it sits on look like they were made by the same hand.
+
+    Drawn on a hundred-unit grid, and the weights are set by the smallest
+    place it is used rather than the largest: twenty-six pixels in the
+    masthead, where a unit is a quarter of a pixel. That is what decides the
+    two things most easily got wrong here — the glyphs are heavy and well
+    apart, because at that size a thin stroke disappears and two shapes
+    nearer than ten units merge into one blot; and the staff ruling sits at
+    six per cent, because anything stronger stops being paper and becomes
+    stripes on the home screen.
+
+    Note the mark carries no outer stroke. Everything else in this system is
+    bounded by a hard rule, and an icon is the one thing that is not: iOS
+    masks it to its own superellipse, so a drawn border would be shaved off
+    on the devices it was drawn for.
+  -->
+  <defs>
+    <linearGradient id="hm-field" x1="0.08" y1="0" x2="0.62" y2="1">
+      <stop offset="0" stop-color="#5A98FF"/>
+      <stop offset="0.52" stop-color="#3478F6"/>
+      <stop offset="1" stop-color="#1B4CB3"/>
+    </linearGradient>
+
+    <!-- Five rules and a rest, at the proportions of the staves token. -->
+    <pattern id="hm-staves" width="100" height="66" patternUnits="userSpaceOnUse">
+      <g fill="#061225" opacity="0.06">
+        <rect y="0"  width="100" height="1.1"/>
+        <rect y="9"  width="100" height="1.1"/>
+        <rect y="18" width="100" height="1.1"/>
+        <rect y="27" width="100" height="1.1"/>
+        <rect y="36" width="100" height="1.1"/>
+      </g>
+    </pattern>
+
+    <clipPath id="hm-plate">
+      <rect width="100" height="100" rx="22.5"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#hm-plate)">
+    <rect width="100" height="100" fill="url(#hm-field)"/>
+    <rect width="100" height="100" fill="url(#hm-staves)"/>
+  </g>
+
+  <!-- The microphone: capsule, cradle, stand. Its baseline is shared with the
+       note's, so the two read as a pair set on one line rather than as two
+       drawings that happen to share a tile. -->
+  <g stroke="#061225" stroke-width="5.6" stroke-linecap="round" fill="none">
+    <rect x="20.5" y="16" width="19" height="34" rx="9.5" fill="#061225" stroke="none"/>
+    <path d="M13 42a17 17 0 0 0 34 0"/>
+    <path d="M30 59v11"/>
+    <path d="M21 72.5h18"/>
+  </g>
+
+  <!-- The note, well clear of the microphone: nothing crosses the gap at
+       x=52, which is what keeps them two shapes at twenty-six pixels. -->
+  <g fill="#061225">
+    <path d="M74.5 19.5c7.8 4.2 13 9.6 13 17 0 4.7-1.8 8.5-4.6 11.4 0.4-7.4-3.3-12.6-8.4-16.3Z"/>
+    <rect x="70" y="18.5" width="4.6" height="47" rx="2.3"/>
+    <ellipse cx="63.6" cy="66.6" rx="10.6" ry="8" transform="rotate(-20 63.6 66.6)"/>
+  </g>
+</svg>
