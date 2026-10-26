@@ -195,8 +195,3 @@ The noise in every clip is seeded. Two runs of the same engine that differed
 by more than most real changes would make the harness useless for the one
 question it exists to answer.
 
-## iOS
-
-The transcriber is packaged with Capacitor. See [IOS.md](IOS.md) for the build,
-the required microphone permission, and what still needs a Mac with Xcode.
-
